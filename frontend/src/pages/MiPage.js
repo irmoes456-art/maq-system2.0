@@ -10,20 +10,31 @@ const NAVY = '#1b2a8f';
 const RED = '#c8102e';
 const SUGGESTIONS = [
   'Quantas OSs Hisense estão aguardando peças?',
-  'Resuma as OSs abertas há mais de 30 dias',
+  'Liste todas as OSs próximas do bairro Renascença',
   'Como fazer o diagnóstico de um defeito segundo o manual?',
 ];
 
-// Markdown mínimo: **negrito**, títulos (#) e quebras de linha.
+// Markdown mínimo estilo ChatGPT: **negrito**, títulos, listas '-'/'1.'; descarta tabelas/separadores se vierem.
 const Inline = ({ text }) => text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
   p.startsWith('**') && p.endsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong> : <React.Fragment key={i}>{p}</React.Fragment>);
 
+const cleanLine = (line) => {
+  if (/^\s*(\|?\s*:?-{2,}:?\s*)+\|?\s*$/.test(line) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line) || /^\s*```/.test(line)) return null;
+  let l = line.replace(/^\s*>\s?/, '');
+  if (/^\s*\|.*\|\s*$/.test(l)) l = l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()).filter(Boolean).join(' — ');
+  return l;
+};
+
 const MessageBody = ({ content }) => (
-  <div className="space-y-1 text-sm leading-relaxed break-words">
-    {content.split('\n').map((line, i) => {
+  <div className="space-y-1.5 text-[15px] leading-relaxed break-words">
+    {content.split('\n').map(cleanLine).filter(l => l !== null).map((line, i) => {
       const h = line.match(/^#{1,4}\s+(.*)/);
       if (h) return <p key={i} className="font-semibold pt-2" style={{ color: NAVY }}><Inline text={h[1]} /></p>;
-      return <p key={i} className="min-h-[0.5rem] whitespace-pre-wrap"><Inline text={line} /></p>;
+      const b = line.match(/^(\s*)[-*•]\s+(.*)/);
+      if (b) return <div key={i} className="flex gap-2" style={{ paddingLeft: b[1].length ? 16 : 4 }}><span className="text-gray-400">•</span><span><Inline text={b[2]} /></span></div>;
+      const n = line.match(/^\s*(\d+)[.)]\s+(.*)/);
+      if (n) return <div key={i} className="flex gap-2 pl-1"><span className="font-medium text-gray-500 min-w-[1.25rem]">{n[1]}.</span><span><Inline text={n[2]} /></span></div>;
+      return line.trim() ? <p key={i} className="whitespace-pre-wrap"><Inline text={line} /></p> : <div key={i} className="h-1" />;
     })}
   </div>
 );

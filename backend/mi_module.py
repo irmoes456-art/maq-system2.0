@@ -21,7 +21,8 @@ MODEL = "gpt-5.4"
 
 OS_FIELDS = [
     "os_number", "customer_name", "status", "source", "brand", "model", "product", "service_type",
-    "reported_defect", "technical_diagnosis", "required_parts", "city", "neighborhood", "serial_number",
+    "reported_defect", "technical_diagnosis", "required_parts", "address", "number", "city", "neighborhood",
+    "lat", "lng", "serial_number",
     "registration_date", "attendance_date", "technician", "phone1", "observations", "updated_at",
 ]
 STOP = set("""a o as os um uma de da do das dos em no na nos nas e ou que qual quais quanto quantos quantas
@@ -93,41 +94,111 @@ def _extract_pages(data: bytes, ext: str, cached_pdf: Optional[bytes]):
 
 
 async def index_manuals(db, mongo_db):
-    """Indexa (1x por manual) o texto de cada página em mi_manual_chunks."""
+    """Sincroniza o índice com os manuais ativos: indexa novos/substituídos, remove apagados."""
     if _index_state["running"]:
+        _index_state["again"] = True  # upload durante indexação: roda de novo ao terminar
         return
     _index_state.update(running=True, last_check=time.time())
     try:
-        chunks_col, idx_col = mongo_db["mi_manual_chunks"], mongo_db["mi_manual_index"]
-        await chunks_col.create_index([("text", "text"), ("title", "text")], default_language="portuguese")
-        done = {d["manual_id"] async for d in idx_col.find({}, {"manual_id": 1})}
-        manuals = await db.manuais.find({"is_deleted": False}, {"_id": 0}).to_list(1000)
-        for m in manuals:
-            if m["id"] in done:
-                continue
-            extra = " ".join(x for x in (m.get("brand"), m.get("category")) if x)
-            title = f"{m.get('original_filename', '')}" + (f" ({extra})" if extra else "")
-            try:
-                data, _ = await asyncio.to_thread(get_object, m["storage_path"])
-                meta = await mongo_db["manuais_preview"].find_one({"manual_id": m["id"]}) or {}
-                cached = None
-                if meta.get("pdf_cache_path"):
-                    cached, _ = await asyncio.to_thread(get_object, meta["pdf_cache_path"])
-                pages = await asyncio.to_thread(_extract_pages, data, (m.get("extension") or "").lower(), cached)
-                docs = []
-                for pnum, txt in enumerate(pages, 1):
-                    txt = re.sub(r"[ \t]+", " ", txt).strip()
-                    for i in range(0, len(txt), 1500):
-                        docs.append({"manual_id": m["id"], "title": title, "page": pnum, "text": txt[i:i + 1600]})
-                if docs:
-                    await chunks_col.insert_many(docs)
-                await idx_col.insert_one({"manual_id": m["id"], "title": title, "chunks": len(docs),
-                                          "indexed_at": datetime.now(timezone.utc)})
-                logger.info(f"[Mi] manual indexado: {title} ({len(docs)} trechos)")
-            except Exception as e:
-                logger.error(f"[Mi] falha ao indexar {title}: {e!r}")
+        while True:
+            _index_state["again"] = False
+            await _index_pass(db, mongo_db)
+            if not _index_state["again"]:
+                break
     finally:
         _index_state["running"] = False
+
+
+async def _index_pass(db, mongo_db):
+    chunks_col, idx_col = mongo_db["mi_manual_chunks"], mongo_db["mi_manual_index"]
+    await chunks_col.create_index([("text", "text"), ("title", "text")], default_language="portuguese")
+    done = {d["manual_id"]: d.get("storage_path") async for d in idx_col.find({}, {"manual_id": 1, "storage_path": 1})}
+    manuals = await db.manuais.find({"is_deleted": False}, {"_id": 0}).to_list(1000)
+    gone = list(set(done) - {m["id"] for m in manuals})
+    if gone:
+        await chunks_col.delete_many({"manual_id": {"$in": gone}})
+        await idx_col.delete_many({"manual_id": {"$in": gone}})
+    for m in manuals:
+        # Já indexado e arquivo não substituído (índices antigos sem storage_path contam como atuais).
+        if m["id"] in done and done[m["id"]] in (None, m["storage_path"]):
+            continue
+        await chunks_col.delete_many({"manual_id": m["id"]})
+        await idx_col.delete_many({"manual_id": m["id"]})
+        extra = " ".join(x for x in (m.get("brand"), m.get("category")) if x)
+        title = f"{m.get('original_filename', '')}" + (f" ({extra})" if extra else "")
+        try:
+            data, _ = await asyncio.to_thread(get_object, m["storage_path"])
+            meta = await mongo_db["manuais_preview"].find_one({"manual_id": m["id"]}) or {}
+            cached = None
+            if meta.get("pdf_cache_path"):
+                cached, _ = await asyncio.to_thread(get_object, meta["pdf_cache_path"])
+            pages = await asyncio.to_thread(_extract_pages, data, (m.get("extension") or "").lower(), cached)
+            docs = []
+            for pnum, txt in enumerate(pages, 1):
+                txt = re.sub(r"[ \t]+", " ", txt).strip()
+                for i in range(0, len(txt), 1500):
+                    docs.append({"manual_id": m["id"], "title": title, "page": pnum, "text": txt[i:i + 1600]})
+            if docs:
+                await chunks_col.insert_many(docs)
+            await idx_col.insert_one({"manual_id": m["id"], "title": title, "chunks": len(docs),
+                                      "storage_path": m["storage_path"], "indexed_at": datetime.now(timezone.utc)})
+            logger.info(f"[Mi] manual indexado: {title} ({len(docs)} trechos)")
+        except Exception as e:
+            logger.error(f"[Mi] falha ao indexar {title}: {e!r}")
+
+
+def _km(a_lat, a_lng, b_lat, b_lng):
+    import math
+    p = math.pi / 180
+    h = math.sin((b_lat - a_lat) * p / 2) ** 2 + math.cos(a_lat * p) * math.cos(b_lat * p) * math.sin((b_lng - a_lng) * p / 2) ** 2
+    return 12742 * math.asin(math.sqrt(h))
+
+
+GEO_WORDS = ("proxim", "perto", "redor", "raio", "regiao", "vizinh", "bairro", "distancia", "localiza")
+
+
+def _geo_context(q: str):
+    """OSs perto de um bairro/cidade (centro = média das OSs desse bairro) ou de uma OS citada."""
+    nq = _norm(q)
+    if not any(w in nq for w in GEO_WORDS):
+        return ""
+    docs = [d for d in _os_cache["docs"] if isinstance(d.get("lat"), (int, float)) and isinstance(d.get("lng"), (int, float))]
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*km", nq)
+    radius = float(m.group(1).replace(",", ".")) if m else 2.0
+    label, pts = None, []
+    nums = set(re.findall(r"\d{5,}", q))
+    ref = next((d for d in docs if str(d.get("os_number")) in nums), None)
+    if ref:
+        label, pts = f"OS {ref['os_number']}", [(ref["lat"], ref["lng"])]
+    else:
+        for field, name in (("neighborhood", "bairro"), ("city", "cidade")):
+            names = {_norm(d.get(field)).strip() for d in docs if d.get(field)}
+            found = sorted((n for n in names if len(n) >= 4 and re.search(rf"\b{re.escape(n)}\b", nq)), key=len, reverse=True)
+            if found:
+                label = f"{name} {found[0]}"
+                pts = [(d["lat"], d["lng"]) for d in docs if _norm(d.get(field)).strip() == found[0]]
+                break
+    if not pts:
+        return ""
+    c_lat, c_lng = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+    near = sorted(((round(_km(c_lat, c_lng, d["lat"], d["lng"]), 2), d) for d in docs), key=lambda x: x[0])
+    near = [(k, d) for k, d in near if k <= radius]
+    lines = [f"Centro: {label}; raio {radius} km; {len(near)} OSs encontradas (ordenadas por distância)."]
+    lines += [f"- OS {d.get('os_number')}; {k} km; status {d.get('status')}; {d.get('address') or ''} {d.get('number') or ''}, "
+              f"{d.get('neighborhood') or ''}, {d.get('city') or ''}; cliente {d.get('customer_name') or ''}; "
+              f"{d.get('product') or d.get('model') or ''}" for k, d in near[:150]]
+    return "\n".join(lines)
+
+
+async def _routes_context(db):
+    routes = await db.routes.find({}, {"_id": 0}).sort("created_at", -1).limit(30).to_list(30)
+    lines = []
+    for r in routes:
+        orders = r.get("orders") if isinstance(r.get("orders"), list) else []
+        os_list = ", ".join(str(o.get("os_number")) for o in orders if isinstance(o, dict))
+        lines.append(f"- {r.get('name')}; técnico {r.get('technician') or '-'}; data {r.get('date')}; status {r.get('status')}; "
+                     f"{r.get('total_distance') or ''} {r.get('total_duration') or ''}; OSs: {os_list or '-'}")
+    return "\n".join(lines) or "(nenhum roteiro)"
 
 
 async def _search_manuals(mongo_db, q: str, limit: int = 8):
@@ -143,11 +214,14 @@ async def _search_manuals(mongo_db, q: str, limit: int = 8):
 
 SYSTEM = (
     "Você é a Mi, assistente da Mastermaq (assistência técnica de eletrodomésticos em Belo Horizonte). "
-    "Responda sempre em português do Brasil, de forma direta e objetiva, usando markdown simples. "
-    "Use SOMENTE os dados de contexto fornecidos (OSs do banco e trechos de manuais). "
-    "Ao responder com base em manual, cite o nome do manual e a página. "
-    "Se a informação não estiver no contexto, diga claramente que não encontrou — nunca invente números, "
-    "códigos de erro, peças ou procedimentos."
+    "Responda sempre em português do Brasil. Use SOMENTE os dados de contexto fornecidos (OSs, roteiros, "
+    "localização das OSs e trechos de manuais). Ao usar um manual, cite o nome do manual e a página. "
+    "Para ajudar a montar roteiros, agrupe OSs próximas pela distância informada (máximo 9 OSs por roteiro). "
+    "Se a informação não estiver no contexto, diga que não encontrou — nunca invente números, códigos, peças ou procedimentos.\n"
+    "FORMATO (obrigatório): responda como o ChatGPT numa conversa normal — vá direto ao ponto, sem repetir a "
+    "pergunta e sem frases de enchimento. Parágrafos curtos; listas com '-' ou '1.' quando houver vários itens. "
+    "NUNCA use tabelas, barras verticais '|', linhas '---', citações '>' ou blocos de código. "
+    "Use **negrito** só para destacar o essencial. Em listas de OSs, uma OS por linha: número, distância, endereço e status."
 )
 
 
@@ -217,7 +291,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             await convs.insert_one(dict(conv))
         cid = conv["id"]
 
-        # Novos manuais enviados entram no índice em background (checa a cada 10 min).
+        # Novos manuais já entram no upload; isto é só rede de segurança (10 min).
         if time.time() - _index_state["last_check"] > 600:
             asyncio.create_task(index_manuals(db, mongo_db))
 
@@ -227,7 +301,9 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         await _load_os(db)
         hist_q = " ".join(m["content"] for m in history if m["role"] == "user")[-400:]
         os_hits = _search_os(f"{text} {hist_q}")
-        man_hits = await _search_manuals(mongo_db, text)
+        man_hits = await _search_manuals(mongo_db, f"{text} {hist_q[-150:]}", limit=10)
+        geo_txt = _geo_context(text) or _geo_context(f"{text} {hist_q}")
+        routes_txt = await _routes_context(db)
         titles = [d["title"] async for d in mongo_db["mi_manual_index"].find({}, {"title": 1})]
 
         os_txt = "\n".join("; ".join(f"{k}={v}" for k, v in d.items() if v) for d in os_hits) or "(nenhuma OS relacionada)"
@@ -237,6 +313,8 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             f"Data de hoje: {datetime.now().strftime('%d/%m/%Y')}\n\n"
             f"## Resumo do banco de OSs\n{_os_cache['stats']}\n\n"
             f"## OSs relacionadas à pergunta\n{os_txt}\n\n"
+            + (f"## Localização (OSs próximas, calculado pelas coordenadas)\n{geo_txt}\n\n" if geo_txt else "")
+            + f"## Roteiros recentes (30 últimos)\n{routes_txt}\n\n"
             f"## Manuais disponíveis\n" + "\n".join(f"- {t}" for t in titles) + "\n\n"
             f"## Trechos de manuais relevantes\n{man_txt}\n\n"
             f"## Conversa anterior\n{hist_txt or '(início)'}\n\n"

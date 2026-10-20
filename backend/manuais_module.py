@@ -239,6 +239,11 @@ def setup_manuais_routes(api_router: APIRouter, db, verify_token):
         if slide_count and pdf_cache_path:
             await _set_meta(manual_id, slide_count, pdf_cache_path)
 
+        # Mi: indexa o texto do novo manual já (background).
+        if _meta_col is not None:
+            from mi_module import index_manuals
+            asyncio.create_task(index_manuals(db, _meta_col.database))
+
         return {
             "id": manual_id,
             "filename": file.filename,
@@ -460,6 +465,9 @@ def setup_manuais_routes(api_router: APIRouter, db, verify_token):
         )
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Manual não encontrado")
+        if _meta_col is not None:
+            from mi_module import index_manuals
+            asyncio.create_task(index_manuals(db, _meta_col.database))
         return {"message": "Manual removido"}
 
     @api_router.put("/manuais/{manual_id}")
