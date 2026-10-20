@@ -1,0 +1,38 @@
+{
+  "summary": "White-labeling Invisacook — todos os 11 asserts passaram no teste E2E via Playwright. Login como Invisacook aplica title/favicon/sidebar preta/header #F7F5F2 e remove role badge; login Admin mantém layout Mastermaq original sem regressão.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DashboardLayout.js está com ~600 linhas — próximo do limite recomendado (700). Considerar extrair OverdueModal, NewOSAlertBanner e ScraperHealthDropdown para arquivos separados em iteração futura.",
+    "Favicon dinâmico via useEffect funciona mas navegadores agressivos podem cachear o favicon anterior. Não é um bug funcional, apenas heads-up de UX em hard-refresh."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% (11/11 asserts)"},
+  "test_credentials": "Admin: mastermaqassistencia@gmail.com/atr132641 | Invisacook: invisacook@invisacookbrasil.com/Invisa@2026",
+  "seed_data_creation": "Nenhum seed criado",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteração 16 validou apenas o white-labeling do perfil Invisacook (title, favicon, sidebar bg preta, header bg #F7F5F2, ausência de role-badge) e a não-regressão do layout Admin. Botão 'Instalar App' NÃO foi testado visualmente (beforeinstallprompt não dispara em Playwright headless) — validação foi somente por code-review no DashboardLayout.js L295-313 confirmando fill #E8551F + border/text pretos condicional a isInvisacook.",
+  "assertions_detail": {
+    "invisacook": {
+      "title": "Invisacook | Portal de OSs — PASS",
+      "favicon": "/assets/invisacook-logo.webp — PASS",
+      "sidebar_bg": "rgb(0, 0, 0) — PASS",
+      "header_bg": "rgb(247, 245, 242) — PASS",
+      "role_badge_absent": "PASS"
+    },
+    "admin": {
+      "title": "Mastermaq | Sistema de Gestão — PASS",
+      "favicon": "/favicon.ico — PASS",
+      "sidebar_bg": "rgb(255, 255, 255) — PASS",
+      "header_bg": "rgb(255, 255, 255) — PASS",
+      "role_badge_text": "'Admin • Administrador' — PASS"
+    }
+  }
+}

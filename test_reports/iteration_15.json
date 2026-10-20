@@ -1,0 +1,28 @@
+{
+  "summary": "Frontend-only verification for Invisacook profile customization (iteration 15): (1) sidebar logo swaps to Invisacook when logged in as invisacook role, and (2) brand-filter popover on Ordens de Serviço is hidden for invisacook. All 4 requested test cases PASSED against the public preview URL.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DashboardLayout.js is 576 lines and does a lot (sidebar + header + polling + overdue modal + PWA + audio). Consider splitting into subcomponents (Sidebar, Header, OverdueModal, NewOSAlert) for maintainability, but not blocking.",
+    "ServiceOrdersPage.js is ~3000 lines — highly recommend splitting into feature-specific subcomponents (filters, list, modals)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100% (4/4)"},
+  "test_credentials": "Admin: mastermaqassistencia@gmail.com / atr132641; Invisacook: invisacook@invisacookbrasil.com / Invisa@2026",
+  "seed_data_creation": "None. Used existing INV-00002 OS.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 15 focused only on Invisacook profile UI: sidebar-logo conditional (invisacook-logo.webp vs Mastermaq LOGO_URL) and brand-filter hidden for invisacook. All PASS on public URL. No regression in Admin flow — Mastermaq logo (customer-assets.emergentagent.com) and brand-filter both visible for Admin. Invisacook sidebar only renders /service-orders nav item and no notifications/overdue badges.",
+  "verified_test_cases": [
+    {"case": "Invisacook sidebar-logo src=/assets/invisacook-logo.webp alt=Invisacook", "result": "PASS"},
+    {"case": "Invisacook brand-filter not rendered on OSs page", "result": "PASS (count=0)"},
+    {"case": "Admin sidebar-logo src contains customer-assets.emergentagent.com (Mastermaq)", "result": "PASS"},
+    {"case": "Admin brand-filter renders on OSs page", "result": "PASS (count=1)"}
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "summary": "Iter 12: validated sync OS<->Laudo / flush-on-close / fresh-on-open fixes. CENARIO 2 (fresh-on-open OS modal) PASS, CENARIO 4 (flush-on-close from OrderDetailModal via Escape) PASS. CENARIOS 5/6/7 (open LaudoModal then interact) BLOCKED — Playwright click on '[data-testid=laudo-type-hisense]' did not transition the LaudoModal from the type selector to step-1 within 30s, so we never reached laudo-diagnosis / laudo-parts inputs. This is a TEST-HARNESS limitation in this run (force=False on a button covered by a Dialog overlay layer), not a confirmed product bug; the same test path worked in iter 11. Backend reset, login, and all REST calls executed via in-page fetch with admin token (len=285).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "LaudoModal type selector click", "issue": "click on laudo-type-hisense without force=True intermittently does not transition to step 1 — investigate if button is wrapped in a focus-trapping layer or if Dialog overlay is intercepting", "affected_selectors": ["[data-testid=laudo-type-hisense]"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Main agent: re-run the 3 LaudoModal scenarios (C5/C6/C7) with force=True click on laudo-type-hisense, or pre-select laudoType via test hook, to confirm bidirectional sync end-to-end. Functional fixes from iter 12 (fresh-on-open + flush-on-close + applyOrderUpdates reducer) are confirmed for the OS-modal side: C2 (external edit shows immediately) and C4 (fast-close flush) both PASS."
+  ],
+  "critical_code_review_comments": [
+    "ServiceOrdersPage.js > 700 lines — keep splitting OrderDetailModal into its own file (already at line 1654).",
+    "LaudoModal useEffect dep array has eslint-disable; the inline best-effort save inside the `if (!open)` branch in the open/order effect is safe but couples open/close logic with the data effect — extract to a dedicated effect that fires only on `open` transitions.",
+    "ServiceOrdersPage handleOrderClick + handleOpenLaudo duplicate the GET-then-merge logic — extract to a small helper to keep DRY.",
+    "applyOrderUpdates is correctly used as single mutation reducer — good. Consider also calling it after handleUpdateOrder() success so the manual Save also goes through the same path."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "C2 PASS, C4 PASS, C5/C6/C7 BLOCKED by test harness"},
+  "test_credentials": "mastermaqassistencia@gmail.com / atr132641 (admin) — see /app/memory/test_credentials.md",
+  "seed_data_creation": "OS 27691 reset between every scenario via PUT (technical_diagnosis/required_parts/voltage_*/technician/photo_1 cleared).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use page.evaluate fetch with token from localStorage('token') — direct urllib from script host fails. For laudo type-selector, use force=True and prefer clicking via locator('button:has-text(\"Laudo Hisense\")').first or wait for [data-testid=laudo-modal-title]:has-text('Laudo Técnico') to confirm transition. C1 (photo sync) was not executed due to harness time; main agent or next tester should validate via base64 PNG injected through the hidden file input inside ImageUploadField (input is inside [data-testid=image-upload-0] container).",
+  "rca of the issue": "Iter 12 product fixes verified for the OS-modal direction (fresh-on-open + flush-on-close). Bidirectional path (Laudo->OS, OS->Laudo via Gerar Laudo) needs re-validation with a more robust selector path for the LaudoModal type selector."
+}

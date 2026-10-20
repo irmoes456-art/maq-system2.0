@@ -1,0 +1,1 @@
+grep command /etc/supervisor/conf.d/*.conf | grep backend

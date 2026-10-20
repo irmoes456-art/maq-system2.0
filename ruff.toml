@@ -1,0 +1,8 @@
+# Legacy codebase (migrated from felpcoding/mastermaq-sistema) — the following
+# lint issues exist in the original repo and are intentionally preserved as-is
+# per the migration directive ("preservando 100% do estado atual sem alterar código").
+[lint]
+ignore = [
+    "E722",  # bare except — 14 legacy occurrences across scrapers/migrations
+    "F811",  # redefinition of unused imports — 2 legacy occurrences in server.py
+]

@@ -1,0 +1,56 @@
+{
+  "summary": "Reproduced and root-caused the 'Dados para Laudo fields are not saved' bug. The OrderDetailModal autosave works correctly (PUT 200, payload OK, backend persisted). The actual bug lives in LaudoModal: its autosave PUT to /api/service-orders/{os} overwrites OS laudo fields with stale (empty) values because LaudoModal receives the parent's STALE order snapshot — not the updated editedOrder from OrderDetailModal. When the user fills a field in OrderDetailModal, then opens LaudoModal and types anything (autosave fires every 600ms), LaudoModal posts technical_diagnosis='', voltage_f1f2='', installation_correct='', etc. wiping the freshly-saved data.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "LaudoModal.runLaudoSave",
+        "issue": "Builds OS PUT payload as { technical_diagnosis: fd.technical_diagnosis || '', installation_correct: fd.installation_correct || '', voltage_f1f2: fnd.voltage_f1f2 || '', voltage_f1_terra: fnd.voltage_f1_terra || '', voltage_f2_terra: fnd.voltage_f2_terra || '', technician: fnd.technician || '', model/serial/etc... }. Because LaudoModal received a STALE `order` snapshot from ServiceOrdersPage (parent never refreshes after OrderDetailModal autosaves), every empty/unfilled field is sent as '' to the OS, OVERWRITING the data the user just typed in OrderDetailModal. Reproduction: empty OS → in OrderDetailModal type technical_diagnosis='ABC' (autosaves OK, backend has 'ABC') → click 'Gerar Laudo' → in LaudoModal type only Peças='XYZ' → backend now has technical_diagnosis='' and required_parts='XYZ' (i.e. ABC was destroyed). Verified via Playwright + curl.",
+        "selector": "/app/frontend/src/components/LaudoModal.js lines 306-323",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "ServiceOrdersPage.handleOpenLaudo / laudoOrder state",
+        "issue": "When clicking 'Gerar Laudo' from inside an open OrderDetailModal, the LaudoModal receives the parent's `order` (a snapshot of the row from the OS list query) instead of the LIVE `editedOrder` currently being edited. So even after OrderDetailModal autosaves successfully, LaudoModal sees pre-edit values. This is the upstream cause that combines with the bug above to produce data loss.",
+        "selector": "/app/frontend/src/pages/ServiceOrdersPage.js (LaudoModal mount around line 1610 — order={laudoOrder})",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "OS Detail → Gerar Laudo round-trip sync",
+        "issue": "OrderDetailModal → backend round-trip is correct; LaudoModal → backend writes the laudo draft AND syncs into OS. But LaudoModal's OS sync uses stale field values, so the 'sync' is destructive rather than additive.",
+        "affected_selectors": ["[data-testid=modal-technical-diagnosis]", "[data-testid=modal-required-parts]", "[data-testid=modal-voltage-f1f2]", "[data-testid=modal-voltage-f1terra]", "[data-testid=modal-voltage-f2terra]", "[data-testid=modal-installation]", "[data-testid=modal-technician]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_10.json"],
+  "action_items": [
+    "Fix LaudoModal runLaudoSave (lines 306-323): do NOT send fields the user hasn't actually edited in LaudoModal. Either (a) re-fetch the latest OS via GET /api/service-orders/{os} just before the PUT and merge, or (b) only include keys that differ from the initially-loaded order snapshot, or (c) drop OS-only laudo fields from the OS PUT and rely on OrderDetailModal as the sole writer for those.",
+    "Refresh parent's `order` after OrderDetailModal autosave (or pass editedOrder down to LaudoModal). Suggested: in handleOpenLaudo, GET the latest OS before opening LaudoModal, OR make ServiceOrdersPage update its order list after each PUT.",
+    "Add a regression test: open OS → set technical_diagnosis='ABC' → open LaudoModal → type required_parts='XYZ' → close → assert backend has technical_diagnosis='ABC' AND required_parts='XYZ'.",
+    "(Optional UX) Show 'Sincronizando com OS...' indicator when LaudoModal opens, and confirm the user-visible fields reflect the just-saved OS values."
+  ],
+  "critical_code_review_comments": [
+    "LaudoModal.runLaudoSave is destructive-by-default: any unfilled OS field is force-blanked. Pattern `fd.x || ''` should only be used for keys the user really did interact with in the laudo form.",
+    "OrderDetailModal autosave (ServiceOrdersPage.js 1704-1732) is correct and proven by E2E: PUT fires within 800ms, payload contains exactly the edited fields plus existing non-photo fields, backend returns 200, GET reflects persisted values.",
+    "Backend PUT /api/service-orders/{os_number} accepts partial ServiceOrderUpdate correctly — confirmed via curl. Nothing to fix server-side.",
+    "Console warning (non-blocking): 'Missing Description or aria-describedby for DialogContent' appears on every Radix Dialog. Cosmetic a11y warning."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (curl PUT 200, persistence confirmed)", "frontend": "OrderDetailModal autosave: PASS. LaudoModal autosave: WRITES but DESTROYS other fields (CRITICAL)."},
+  "test_credentials": "Admin mastermaqassistencia@gmail.com / atr132641 (used).",
+  "seed_data_creation": "Used real OS 27691. Reset its laudo fields to '' before test, then re-populated 'TESTE_DIAG_E2E'/'TESTE_PECAS_E2E'/'220V'/'TESTE_TEC_E2E' via UI. Backend ends with technical_diagnosis='' and required_parts='TESTE_LAUDO_PECAS' — please clean up via PUT after main agent fixes the bug.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend PUT /api/service-orders/27691 is healthy. The user's reported symptom ('fields don't save in OS modal') is misleading: OrderDetailModal autosave works perfectly. The real bug is that LaudoModal's autosave OVERWRITES the OS laudo fields with empty strings because (1) LaudoModal receives a stale `order` prop from ServiceOrdersPage and (2) runLaudoSave force-sends every laudo field on every save. To retest the fix: (a) reset OS 27691 to empty laudo fields via PUT; (b) login, open OS 27691, fill modal-technical-diagnosis='X', wait 2s; (c) verify backend has technical_diagnosis='X' via curl; (d) click Gerar Laudo, select Laudo Hisense, fill ONLY Peças Necessárias='Y', wait 2s; (e) verify backend still has technical_diagnosis='X' AND required_parts='Y'. Currently step (e) FAILS (technical_diagnosis becomes '').",
+  "rca of the issue": {
+    "root_cause": "Two-part defect. (1) ServiceOrdersPage passes the row-list snapshot to LaudoModal as `order` prop; that snapshot is NEVER refreshed after OrderDetailModal autosaves. (2) LaudoModal.runLaudoSave (LaudoModal.js 306-323) unconditionally builds the OS PUT body with every laudo field defaulted to '' (`fd.technical_diagnosis || ''`, etc.), so any field the user didn't touch in the laudo wizard goes back to backend as empty string, overwriting whatever OrderDetailModal just saved.",
+    "reproduction": "1) curl PUT /api/service-orders/27691 {technical_diagnosis:'',required_parts:''} to reset. 2) Login as admin, search 27691, open modal. 3) Type 'ABC' into [data-testid=modal-technical-diagnosis]. 4) Wait 2s. curl GET shows technical_diagnosis='ABC'. 5) Click 'Gerar Laudo' → 'Laudo Hisense'. 6) Type 'XYZ' into 'Peças Necessárias' textarea inside LaudoModal. 7) Wait 2s. curl GET now shows technical_diagnosis='' (data lost) and required_parts='XYZ'.",
+    "mitigation_applied": "None — testing-agent scope is bug identification. Main agent should fix LaudoModal.js 306-323 + ServiceOrdersPage handleOpenLaudo as described in action_items."
+  }
+}

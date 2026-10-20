@@ -1,0 +1,63 @@
+{
+  "summary": "Iteration 25 - RBAC (Admin/Technician), Users CRUD, Photos-status, Webhook outbound log, WhatsApp send-copy handshake. 25/25 backend tests passing (100%). All review request features verified end-to-end including webhook firing on status change to mastermaqassistencia.com.br endpoint and backward-compat for legacy tokens.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "POST /api/auth/login admin -> {token, email, role=admin, name}",
+    "POST /api/auth/login technician (nelson@mastermaq.com) -> role=technician",
+    "POST /api/auth/login invalid credentials -> 401",
+    "GET /api/auth/verify admin -> {valid, email, role=admin, user_id, name}",
+    "GET /api/auth/verify technician -> role=technician + user_id present",
+    "POST /api/auth/refresh -> new token with role",
+    "Backward-compat: legacy token (no role/name in payload) defaults role=admin and passes admin-only endpoints",
+    "GET /api/users (admin) returns list without password_hash/_id leak",
+    "GET /api/users (technician) returns 403 'Acesso restrito a administradores'",
+    "POST /api/users (admin) creates technician with bcrypt password; duplicate email -> 400; invalid role -> 400",
+    "PUT /api/users/{id} updates name/active; cannot demote master admin (400); cannot deactivate master admin (400)",
+    "DELETE /api/users/{master_id} blocked (400) for master admin",
+    "GET /api/users/technicians accessible by both technician and admin",
+    "DELETE /api/users/{id} works for non-master users",
+    "GET /api/service-orders/{os}/photos-status returns {os_number, filled, count, all_done} with correct invariants",
+    "GET /api/service-orders/__not_an_os__/photos-status -> 404",
+    "Photos-status accessible by technician token",
+    "GET /api/webhooks/outbound-log returns {count, webhook_url, rows} with webhook_url=https://mastermaqassistencia.com.br/api/external/webhook/status",
+    "Outbound-log accessible by technician (read-only audit)",
+    "PUT /api/service-orders/{os} with status change fires webhook in background; new entry appears in outbound-log with payload {os_number, status, event_type=status_update} and url=.com.br; revert performed to avoid polluting data",
+    "POST /api/whatsapp/send-copy without auth -> 401/403",
+    "POST /api/whatsapp/send-copy returns structured 4xx (not 500) with detail field when WA not configured / phone invalid",
+    "POST /api/whatsapp/send-copy with empty phone -> 400"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration25_rbac_webhook.py",
+    "/app/test_reports/pytest/iter25_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 2249 lines — recommend splitting into modules (auth, webhooks, whatsapp, photos, service-orders). Already partially done with users_module.py, manuais, whatsapp, inventory, routes, tracking — continue this pattern for /auth, /service-orders and webhook helpers.",
+    "send_webhook_status fires on every status change without retry/backoff or dedup. Since receiver currently returns 404, log will fill up — consider TTL index on webhook_outbound_log (sent_at) and a retry-with-backoff for transient 5xx (current implementation already logs but does not retry).",
+    "/api/whatsapp/send-copy raises HTTPException(detail={...}) with dict detail in upstream-error path — FastAPI does serialize dict detail correctly, but downstream clients should handle both str and dict detail shapes. Consider normalizing to a {step, message, raw} object for consistency.",
+    "Photos-status endpoint correctly limits projection (no _id leak). Good.",
+    "RBAC: /api/users/technicians is documented in test_credentials.md as 'admin-only' but the code allows any authenticated user (required by tech UI). Update doc string in users_module.py:194 — current comment is misleading.",
+    "/api/auth/verify and /auth/refresh re-fetch the user from DB on every call — for high-traffic scenarios, consider a 60s in-memory cache of {email -> user_record}.",
+    "Backward-compat default role='admin' in verify_token is correct for legacy admin tokens but is a latent security risk if any old technician tokens existed without role. Acceptable since pre-RBAC there was only one admin user."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration25_rbac_webhook.py"
+  ],
+  "success_rate": {
+    "backend": "100% (25/25 tests passing)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "admin: mastermaqassistencia@gmail.com/atr132641; technician: nelson@mastermaq.com/nelson123 (seeded in MongoDB)",
+  "seed_data_creation": "Test creates one TEST_ prefixed technician user and deletes it as cleanup. Webhook trigger test performs 2 PUTs on a single existing OS (change status then revert to original) — no permanent data pollution. The webhook receiver (mastermaqassistencia.com.br) is expected to 404 currently; the log entry still gets persisted with status_code=404 or error field, which is the documented behavior.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 25 backend testing complete. Test file at /app/backend/tests/test_iteration25_rbac_webhook.py covers all RBAC + webhook outbound + photos-status + WA send-copy features. Re-run with: cd /app && python -m pytest backend/tests/test_iteration25_rbac_webhook.py -v. Tests use admin and technician credentials from /app/memory/test_credentials.md and run against REACT_APP_BACKEND_URL. JWT_SECRET env var is used for the backward-compat legacy-token test — defaults to 'mastermaq_secret_key_2024_secure' matching backend/.env. The webhook receiver (mastermaqassistencia.com.br) currently returns 404 from production — that's expected per problem statement and the log entry still gets created."
+}

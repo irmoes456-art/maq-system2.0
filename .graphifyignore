@@ -1,0 +1,27 @@
+# Graphify ignore — exclui ruído que polui as queries
+# Regra: código de produção sim; testes, artifacts e migrations não.
+
+# Testes
+backend_test.py
+backend/tests/
+tests/
+test_reports/
+test_result.md
+
+# Artifacts / logs
+artifacts/
+graphify-out/
+*.log
+*.hash
+
+# Migration snapshots / one-off scripts
+migration_*.json
+iteration_*.json
+backend/fix_dates.py
+
+# Build outputs
+frontend/build/
+frontend/node_modules/
+
+# JSON de dados grandes que confundem o grafo
+*.share_token.xml

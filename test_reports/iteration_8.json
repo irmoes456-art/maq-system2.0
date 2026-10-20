@@ -1,0 +1,66 @@
+{
+  "summary": "Validated rewrite of /app/frontend/src/utils/printingService.js. Default size '50x30' now correctly emits a 58mm x 30mm @page (landscape paper, matching the GoldenSky GS-JP58h driver) with the visual .label centered in the 50x30mm content area via padding 0mm 4mm. Tested via live UI (login -> /service-orders -> popup intercept hook) for store-label (1 copy and 5 copies) and OS-label (via order modal). Variant regression for '50x30-direct', '50x30-portrait', '80x50', '100x50' validated via synthetic replica of the SIZES map + baseStyles inside the live page (since the module is not exposed on window). Anti-regression check confirms NO 30mm x 50mm @page leakage from the previous (wrong) iteration. /api/service-orders returns 200. All assertions pass — feature is correct.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/tests/test_label_print.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "printingService.js is well-structured: SIZES table now uses paperW/paperH/contentW/contentH/marginH/marginV/orientation — clean separation between paper enviado ao driver and area visual da etiqueta. Comment block at top of file documents the use case (58mm bobina with 50mm centered label) clearly.",
+    "Minor: openPrintWindow falls back to alert('permita popups') when window.open is blocked — consider returning a Promise so callers can chain UI feedback (toast) instead of using a native alert(). Not a bug, just UX polish.",
+    "Minor: calcQrSizeMm clamps to 14-26mm; for 50x30 landscape it returns floor(min(50,30)*0.80)=24, OK. For 30x50 portrait it returns floor(30*0.80)=24, also OK. Sanity-correct.",
+    "Observação: nenhum bug funcional encontrado nesta iteração."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100% (api regression only — /api/service-orders=200)", "frontend": "100%" },
+  "test_credentials": "Admin: mastermaqassistencia@gmail.com / atr132641 (from /app/memory/test_credentials.md) — login works",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All thermal label printing tests pass. Validation strategy: install window.open hook AFTER navigation via page.evaluate (NOT add_init_script — that needed a reload and was flaky on this app). Hook replaces window.open with a fake popup that records doc.write into window.__captured[]. Then click print-store-label-button -> print-store-N for store labels; click first order-card-* -> modal-print-label for OS label. For variants beyond the default (50x30-direct, 50x30-portrait, 80x50, 100x50), the bundled module is not exposed on window, so direct invocation requires either (a) exposing printOSLabel/printStoreLabel on window during dev/test, or (b) replicating baseStyles+SIZES in the page (what we did). Suggestion to main agent: in printingService.js add `if (process.env.NODE_ENV !== 'production') { window.__printingService = { printOSLabel, printStoreLabel, LABEL_SIZES }; }` to make future end-to-end variant tests trivial.",
+  "validation_results": {
+    "test1_store_1_copy_default_50x30": {
+      "page_size_58mm_30mm": true,
+      "page_block_width_58mm_height_30mm": true,
+      "page_block_padding_0mm_4mm": true,
+      "label_block_width_50mm_height_30mm": true,
+      "label_block_flex_direction_row": true,
+      "page_count": 1,
+      "page_break_after_always_present": true,
+      "last_child_page_break_after_auto": true,
+      "qr_size_mm": 24,
+      "qr_le_24mm": true,
+      "anti_regression_NOT_30mm_50mm": true
+    },
+    "test2_store_5_copies": {
+      "page_count": 5,
+      "page_size_58mm_30mm": true,
+      "page_break_after_always_present": true,
+      "last_child_page_break_after_auto": true
+    },
+    "test3_os_label_via_modal": {
+      "page_size_58mm_30mm": true,
+      "page_block_width_58mm_height_30mm": true,
+      "page_block_padding_0mm_4mm": true,
+      "label_block_width_50mm_height_30mm": true,
+      "label_block_flex_direction_row": true,
+      "label_block_NOT_flex_column": true,
+      "anti_regression_NOT_30mm_50mm": true,
+      "has_os_num_class": true,
+      "has_qr_img": true,
+      "qr_size_mm": 24
+    },
+    "test4_variants_synthetic": {
+      "50x30": { "page_size_58mm_30mm": true, "label_50x30_landscape": true },
+      "50x30-direct": { "page_size_50mm_30mm": true, "label_50x30_landscape": true },
+      "50x30-portrait": { "page_size_30mm_50mm": true, "label_30x50_portrait_column": true },
+      "80x50": { "page_size_80mm_50mm": true, "landscape": true },
+      "100x50": { "page_size_100mm_50mm": true, "landscape": true }
+    },
+    "test5_api_regression": { "GET /api/service-orders?limit=1": 200 }
+  },
+  "rca_of_the_issue": "N/A — this iteration is a validation of the new schema. No bug found. Previous iteration 7 (which forced portrait 30x50) was the wrong fix for this user's setup (his physical bobina is landscape 58mm wide). Iteration 8 (current) correctly emits 58x30 landscape @page with content area centered in 50x30 via padding 0 4mm — exactly the geometry the GoldenSky GS-JP58h driver expects."
+}

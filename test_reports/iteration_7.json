@@ -1,0 +1,57 @@
+{
+  "summary": "Thermal label printing portrait (30x50mm) fix validation. Found and FIXED a critical syntax bug in /app/frontend/src/utils/printingService.js (lines 83-84) that was breaking the entire feature: CSS comment contained UNESCAPED backticks (`.left` and `.right`) inside a backtick template literal, which terminated the template literal early and caused a runtime TypeError 'whwhwwwhwhflexDirectionpaddinglabelGap.left is not a function' at baseStyles/printStoreLabel. After my fix (removed backticks around .left/.right in the CSS comment), ALL printing tests pass.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/tests/test_label_print.py"],
+  "action_items": [
+    "REVIEW the fix I applied at /app/frontend/src/utils/printingService.js line 83 (removed backticks around .left and .right in CSS comment). E1 should verify this is the desired phrasing for the comment or rewrite the comment to be clearer.",
+    "Consider adding ESLint rule no-template-curly-in-string and add a unit test that simply invokes baseStyles(30,50,'portrait') to catch this class of bug in CI."
+  ],
+  "critical_code_review_comments": [
+    "BUG (now fixed by me): CSS comment inside a backtick template literal in baseStyles() contained unescaped backticks `.left` and `.right`, which terminated the template literal mid-CSS, causing JS to parse the rest as expressions and throw TypeError at runtime. This broke 100% of label printing. Always escape (\\`) backticks inside template literals, or avoid them inside the literal string.",
+    "OBSERVATION: The fix in this iteration (portrait orientation 30x50mm) is otherwise correct. SIZES['50x30'] now correctly maps to {w:30,h:50,orientation:'portrait'}, flex-direction:column is applied, and QR is sized at 24mm (within the spec 14-26mm clamp at w*0.80=24mm)."
+  ],
+  "updated_files": ["/app/frontend/src/utils/printingService.js"],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100% (after fix)"},
+  "test_credentials": "Admin: mastermaqassistencia@gmail.com / atr132641 (from /app/memory/test_credentials.md) - login works",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Frontend printing of thermal labels (30x50mm portrait) is working. Validation done by intercepting window.open via JS hook (window.open replaced with stub that captures document.write payload). Validated HTML structure for printStoreLabel (1 copy and 5 copies) and printOSLabel from order modal. All assertions on @page size (30mm 50mm), label dimensions (30mm x 50mm), flex-direction:column, QR size (24mm x 24mm), label count, page-break-after:always/auto on :last-child, and overflow:hidden — ALL PASS. HTML files saved at /tmp/store_label.html and /tmp/os_label.html for reference. Saved playwright placeholder at /app/tests/test_label_print.py.",
+  "rca_of_the_issue": {
+    "symptom": "Clicking 'Imprimir Adesivo' produced a runtime error overlay 'TypeError: whwhwwwhwhflexDirectionpaddinglabelGap.left is not a function at baseStyles / printStoreLabel'. No popup opened, no HTML generated.",
+    "root_cause": "In /app/frontend/src/utils/printingService.js, the baseStyles() function returns a multi-line CSS string using a backtick template literal (lines 73-121). Within that template literal, a CSS comment contained MARKDOWN-STYLE inline-code backticks: 'Mantemos as classes `.left` e `.right` para evitar quebrar callers'. These literal backticks PREMATURELY TERMINATED the JavaScript template literal at the first ` before .left, so the rest of the file was parsed as JS expressions: ${w}mm ... ${h}mm ... ${flexDirection} ... ${padding} ... ${labelGap} were string-concatenated and then JS tried to do `.left(...)` on the result, blowing up with the observed TypeError.",
+    "reproduction_steps": "1) Login admin -> /service-orders. 2) Click data-testid=print-store-label-button -> data-testid=print-store-1. 3) Observe Uncaught TypeError overlay; popup never opens.",
+    "mitigation_applied": "Removed the backticks around .left and .right inside the CSS comment (line 83 of printingService.js). Alternative fixes: escape them with \\` or rephrase the comment without backticks. After the fix, the template literal closes correctly at line 121, baseStyles() returns the expected CSS string, and printStoreLabel/printOSLabel produce valid HTML."
+  },
+  "validation_after_fix": {
+    "store_label_1_copy": {
+      "@page size 30mm 50mm": true,
+      "label width 30mm + height 50mm": true,
+      "flex-direction column (portrait)": true,
+      "label count": 1,
+      "overflow hidden": true,
+      "page-break-after always present": true,
+      "last-child page-break-after auto": true,
+      "QR size mm": "24x24 (within 14-26 clamp, <=26 spec)"
+    },
+    "store_label_5_copies": {
+      "label count": 5,
+      "@page 30mm 50mm": true,
+      "last-child page-break-after auto": true
+    },
+    "os_label": {
+      "@page 30mm 50mm": true,
+      "label 30x50mm": true,
+      "flex-direction column": true,
+      "has .os-num class (OS number stacked above QR)": true,
+      "QR img as data URL": true,
+      "QR size": "24x24mm"
+    },
+    "landscape_residual_check": "page_size_50_30 NOT present (no landscape leakage in default size)"
+  }
+}

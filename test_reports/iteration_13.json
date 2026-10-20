@@ -1,0 +1,49 @@
+{
+  "summary": "Iter 13 retest of C1/C5/C6/C7 with JS-click on laudo-type-hisense (per iter 12 guidance). C5 PASS, C6 and C7 FAIL with reproducible regression: editing required_parts inside LaudoModal does NOT sync to OS backend (required_parts stays '' after autosave AND after Esc/flushAndClose). C1 BLOCKED — image-upload-0 was not reachable from step 1; laudo-next-btn click did not transition to photo step in the harness. The bidirectional sync fix from iter 11 (LaudoModal->OS via addIfFilled) appears to be regressed for laudo-parts.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "LaudoModal -> OS sync (Laudo->OS for required_parts)",
+        "issue": "Typing 'BIDIR_LAUDO_BACK' in [data-testid=laudo-parts], waiting 2.5s for 600ms-debounce autosave, then closing modal via Esc (flushAndClose) does NOT propagate to OS. GET /api/service-orders/27691 still returns required_parts=''. Same in C7 with 'KEEP_PARTS_X': backend td='KEEP_DIAG_X' but rp=''. Reproducible 2/2.",
+        "affected_selectors": ["[data-testid=laudo-parts]", "[data-testid=modal-required-parts]"]
+      },
+      {
+        "flow": "Photo upload step not reachable in test",
+        "issue": "After selecting Hisense, clicking [data-testid=laudo-next-btn] then querying [data-testid=image-upload-0] returns count=0. Either next-btn click did not transition to step 2, or image-upload data-testid is rendered differently. C1 not executed.",
+        "affected_selectors": ["[data-testid=laudo-next-btn]", "[data-testid=image-upload-0]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "PRIORITY HIGH: Re-verify LaudoModal.runLaudoSave actually sends required_parts in the PUT body. Suspected: formData.required_parts may not be in formDataRef.current at the time the debounced autosave fires, OR the addIfFilled call for required_parts on line 332 of LaudoModal.js is being skipped because fd.required_parts is empty. Add temporary console.log of osUpdate in runLaudoSave to confirm.",
+    "PRIORITY HIGH: Check whether the laudo-parts <Input> onChange is actually updating formData.required_parts. Could be a controlled-component issue or the input is bound to a different state key in the current rendered step (renderHisense step 1).",
+    "Verify image upload step layout: confirm if image-upload-0 is on step 2 (post laudo-next-btn) and whether next-btn requires required fields to be filled before allowing navigation. Tester saw count=0 immediately after clicking next-btn.",
+    "C5 (OS->Laudo direction) is confirmed PASS — fresh-on-open of LaudoModal correctly reads order.technical_diagnosis (verified value 'BIDIR_OS_FRESH' in [data-testid=laudo-diagnosis] after OS-side edit + autosave + Gerar Laudo + Hisense)."
+  ],
+  "critical_code_review_comments": [
+    "LaudoModal.js runLaudoSave (line 300+) uses addIfFilled which trims and skips empty. If formData.required_parts is genuinely empty when the autosave fires, it will be silently dropped. Add a debug log temporarily: console.log('OS PUT body', osUpdate) before axios.put on line 338.",
+    "LaudoModal.js line 354-361 autosave deps include formData but the debounce is 600ms. Test waited 2.5-3.5s, plenty. Issue is more likely state-binding than timing.",
+    "Line 526 <Input value={formData.required_parts} onChange={e => setFormData({...formData, required_parts: e.target.value})} data-testid=laudo-parts> looks correct. Suspect possibly the field gets reset after laudoType change. Check if setLaudoType('hisense') indirectly resets formData (it shouldn't — line 802 only calls setLaudoType).",
+    "LaudoModal.js > 700 lines (898) — still recommend splitting per iter 12 review."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "not retested (frontend-only request)",
+    "frontend": "C5 PASS, C6 FAIL (regression), C7 FAIL (regression), C1 BLOCKED (could not reach photo step)"
+  },
+  "test_credentials": "Admin: mastermaqassistencia@gmail.com / atr132641 — used. Token len=285 stored in localStorage('token').",
+  "seed_data_creation": "OS 27691 reset to empty {technical_diagnosis,required_parts,voltage_*,technician,installation_correct,photo_1} via PUT before each scenario, and again at end.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "JS click on [data-testid=laudo-type-hisense] WORKS (page.evaluate(() => document.querySelector('[data-testid=laudo-type-hisense]').click())) — in iter 13 run 1 the transition happened successfully and laudo-diagnosis pre-populated with 'BIDIR_OS_FRESH', so iter 12's harness blocker is resolved. The real blocker now is the Laudo->OS sync regression for required_parts. For C1, try clicking laudo-next-btn TWICE or check if step indicator advances; the image-upload-0 should appear on the photos step (likely step 2). Alternatively, use a JS click on laudo-next-btn or set currentStep via React DevTools.",
+  "rca of the issue": {
+    "observed": "C5 (OS->Laudo data flow) PASS — order.technical_diagnosis 'BIDIR_OS_FRESH' from OS-side autosave shows up correctly in [data-testid=laudo-diagnosis] when LaudoModal opens. C6/C7 (Laudo->OS for required_parts) FAIL — after typing in [data-testid=laudo-parts] + 2.5s wait + Esc (flushAndClose), GET /api/service-orders/27691 still returns required_parts=''.",
+    "reproduction": "1) Reset OS 27691 (clear required_parts). 2) Login admin. 3) Open OS 27691 detail. 4) Optionally type in modal-technical-diagnosis for KEEP_DIAG. 5) Click [data-testid=modal-laudo]. 6) JS-click [data-testid=laudo-type-hisense]. 7) Type 'KEEP_PARTS_X' in [data-testid=laudo-parts]. 8) Wait 2.5s. 9) Esc to close. 10) GET /api/service-orders/27691 -> required_parts is '' (BUG).",
+    "likely_cause": "LaudoModal.runLaudoSave addIfFilled(required_parts, fd.required_parts) is either (a) being called with fd.required_parts='' because formDataRef.current is stale relative to the input update, or (b) the input's onChange is not actually setting formData.required_parts in the rendered Hisense step. Recommend adding console.log of osUpdate inside runLaudoSave to confirm whether 'required_parts' key is present in the PUT body.",
+    "iter_11_vs_iter_13": "Iter 11 verified PUT body contained 'required_parts: XYZ' as additive. Iter 13 shows the value is no longer reaching backend. Possible regression introduced in iter 12 fresh-on-open / flushAndClose / applyOrderUpdates changes — specifically the open/order useEffect (line 199-258) re-running and possibly resetting formData with stale order data."
+  }
+}
