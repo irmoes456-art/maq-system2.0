@@ -443,6 +443,7 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Histórico por usuário em Mongo (`mi_conversations`, `mi_messages`).
 - Contexto: cache de todas as OSs do Supabase (10 min) → resumo origem×status/marcas + até 25 OSs relevantes por palavra-chave/nº OS. Manuais: texto extraído (pdftotext; PPTX via PDF cache; DOCX) em `mi_manual_chunks` com índice text (português) → 8 trechos mais relevantes, citando manual e página. Indexa no startup e a cada 10 min no uso (novos uploads). 56 manuais / 2547 trechos.
 - Erro do LLM retorna 424 com detalhe (502 era trocado pela página do Cloudflare).
+- Fallback Ollama Cloud (`OLLAMA_API_KEY`, `OLLAMA_BASE_URL=https://ollama.com`, `OLLAMA_MODEL=gpt-oss:120b`): usado quando a Universal Key falha (ex: saldo esgotado). Validado: resposta em ~12s citando manual/página.
 
 ### Próximo
 - Informar Map ID próprio; validar navegação em campo. Recarregar saldo da Universal Key para a Mi responder.

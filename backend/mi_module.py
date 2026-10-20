@@ -151,6 +151,20 @@ SYSTEM = (
 )
 
 
+async def _ollama_chat(prompt: str) -> str:
+    """Fallback: Ollama Cloud quando a Universal Key falha (ex: saldo esgotado)."""
+    import httpx
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"{os.environ['OLLAMA_BASE_URL']}/api/chat",
+            headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
+            json={"model": os.environ["OLLAMA_MODEL"], "stream": False,
+                  "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]},
+        )
+        r.raise_for_status()
+        return (r.json().get("message", {}).get("content") or "").strip()
+
+
 class ChatBody(BaseModel):
     message: str
     conversation_id: Optional[str] = None
@@ -233,9 +247,12 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"mi-{cid}", system_message=SYSTEM).with_model("openai", MODEL)
             answer = (await chat.send_message(UserMessage(text=prompt)) or "").strip()
         except Exception as e:
-            logger.error(f"[Mi] LLM falhou: {e!r}")
-            msg = "Saldo da Universal Key esgotado." if "Budget" in str(e) else "Falha ao consultar a IA."
-            raise HTTPException(status_code=424, detail=msg)
+            logger.warning(f"[Mi] Universal Key falhou, usando Ollama: {e!r}")
+            try:
+                answer = await _ollama_chat(prompt)
+            except Exception as e2:
+                logger.error(f"[Mi] Ollama falhou: {e2!r}")
+                raise HTTPException(status_code=424, detail="Falha ao consultar a IA (Universal Key e Ollama).")
 
         done = datetime.now(timezone.utc).isoformat()
         reply = {"id": str(uuid.uuid4()), "conversation_id": cid, "role": "assistant", "content": answer, "created_at": done}
