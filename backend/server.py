@@ -3419,6 +3419,13 @@ setup_manuais_routes(api_router, db, verify_token)
 setup_whatsapp_routes(api_router, db, verify_token)
 setup_users_routes(api_router, mongo_db, verify_token)
 setup_label_templates_routes(api_router, mongo_db, verify_token)
+from mi_module import setup_mi_routes, index_manuals as mi_index_manuals
+setup_mi_routes(api_router, db, mongo_db, require_admin)
+
+
+@app.on_event("startup")
+async def startup_mi_index():
+    asyncio.create_task(mi_index_manuals(db, mongo_db))
 
 app.include_router(api_router)
 

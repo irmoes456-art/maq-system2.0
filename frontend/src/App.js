@@ -17,6 +17,7 @@ import OSPublicViewPage from './pages/OSPublicViewPage';
 import ProductPublicViewPage from './pages/ProductPublicViewPage';
 import LabelTemplatesPage from './pages/LabelTemplatesPage';
 import PublicSignPage from './pages/PublicSignPage';
+import MiPage from './pages/MiPage';
 import './App.css';
 
 const ProtectedRoute = ({ children, adminOnly = false, allowedRoles = null }) => {
@@ -175,6 +176,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute adminOnly>
             <LabelTemplatesPage />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/mi" 
+        element={
+          <ProtectedRoute adminOnly>
+            <MiPage />
           </ProtectedRoute>
         } 
       />

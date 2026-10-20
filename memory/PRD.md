@@ -435,5 +435,14 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Voz em camadas: "Em 800/500/200 metros, …" e instrução a <50m; cada aviso falado 1x por step; pula steps ultrapassados. Bug corrigido: chegada em parada sobrescrevia `lastSpokenRef` (reiniciava os steps) → agora `lastArrivalRef`.
 - Map ID: `REACT_APP_GOOGLE_MAP_ID` (fallback `DEMO_MAP_ID`). Usuário precisa criar Map ID vetorial no Google Cloud e informar.
 
+### 35. Roteiro: limite de 9 OSs (20/10/2026)
+- `MAX_ROUTE_OS = 9`: cada sugestão mostra no máx. 9 OSs; combinar sugestões para em 9; otimizar/editar roteiro aceita até 9 (antes 8).
+
+### 36. Página Mi (assistente IA estilo ChatGPT)
+- `backend/mi_module.py` + `frontend/src/pages/MiPage.js`, menu "Mi" (somente admin). Modelo OpenAI `gpt-5.4` via EMERGENT_LLM_KEY.
+- Histórico por usuário em Mongo (`mi_conversations`, `mi_messages`).
+- Contexto: cache de todas as OSs do Supabase (10 min) → resumo origem×status/marcas + até 25 OSs relevantes por palavra-chave/nº OS. Manuais: texto extraído (pdftotext; PPTX via PDF cache; DOCX) em `mi_manual_chunks` com índice text (português) → 8 trechos mais relevantes, citando manual e página. Indexa no startup e a cada 10 min no uso (novos uploads). 56 manuais / 2547 trechos.
+- Erro do LLM retorna 424 com detalhe (502 era trocado pela página do Cloudflare).
+
 ### Próximo
-- Informar Map ID próprio; validar navegação em campo.
+- Informar Map ID próprio; validar navegação em campo. Recarregar saldo da Universal Key para a Mi responder.

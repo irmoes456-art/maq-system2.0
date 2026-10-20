@@ -270,6 +270,7 @@ const normalizeAddressForMaps = (order, includeBairro = false) => {
 const BASE_ADDR = 'Rua Descalvado, 636A, Renascença, Belo Horizonte, MG';
 const BASE_LAT = -19.8881334;
 const BASE_LNG = -43.9420748;
+const MAX_ROUTE_OS = 9;
 
 // Haversine distance in meters
 const haversine = (lat1, lng1, lat2, lng2) => {
@@ -2504,8 +2505,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
     setSelectedSuggestions(new Set()); // reset multi-select ao recomputar
     try {
       // 1. Filtra por status roteirizáveis (nunca Finalizada/Cancelada).
-      // 2. Sem limite artificial — cada grupo mostra TODAS as OS que
-      //    atendem o critério (não mais MAX_OS fixo em 4/8).
+      // 2. Cada grupo mostra no máximo MAX_ROUTE_OS (9) OSs, as mais relevantes do critério.
       const routableOrders = filteredOrders.filter(isRoutable);
       const osNumbers = routableOrders.map(o => o.os_number);
       if (osNumbers.length < 2) {
@@ -2584,12 +2584,13 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
         .sort((a, b) => haversine(baseLat, baseLng, a.lat, a.lng) - haversine(baseLat, baseLng, b.lat, b.lng));
 
       const avgDist = (arr) => arr.length === 0 ? 0 : arr.reduce((s, o) => s + haversine(baseLat, baseLng, o.lat, o.lng), 0) / arr.length;
+      const top = (arr) => arr.slice(0, MAX_ROUTE_OS);
 
       const options = [
-        { key: 'regiao', name: 'Região (Cluster Denso)', orders: regionCluster, avgDist: avgDist(regionCluster).toFixed(1), icon: '🗺' },
-        { key: 'proximas', name: 'Próximas da Base', orders: nearBase, avgDist: avgDist(nearBase).toFixed(1), icon: '📍' },
-        { key: 'tempo', name: 'Tempo (>10 dias em aberto)', orders: overdue, avgDist: avgDist(overdue).toFixed(1), icon: '⏰' },
-        { key: 'prioridade', name: 'Prioridade (marcadas)', orders: priorityOnly, avgDist: avgDist(priorityOnly).toFixed(1), icon: '⚡' },
+        { key: 'regiao', name: 'Região (Cluster Denso)', orders: top(regionCluster), avgDist: avgDist(top(regionCluster)).toFixed(1), icon: '🗺' },
+        { key: 'proximas', name: 'Próximas da Base', orders: top(nearBase), avgDist: avgDist(top(nearBase)).toFixed(1), icon: '📍' },
+        { key: 'tempo', name: 'Tempo (>10 dias em aberto)', orders: top(overdue), avgDist: avgDist(top(overdue)).toFixed(1), icon: '⏰' },
+        { key: 'prioridade', name: 'Prioridade (marcadas)', orders: top(priorityOnly), avgDist: avgDist(top(priorityOnly)).toFixed(1), icon: '⚡' },
       ];
       setProximityOptions(options);
       setShowProximityPanel(true);
@@ -2657,7 +2658,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
     const merged = new Map();
     proximityOptions.forEach(opt => {
       if (selectedSuggestions.has(opt.key)) {
-        opt.orders.forEach(o => merged.set(o.os_number, o));
+        opt.orders.forEach(o => { if (merged.size < MAX_ROUTE_OS) merged.set(o.os_number, o); });
       }
     });
     setSelectedOS(new Set(merged.keys()));
@@ -2686,8 +2687,8 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
       toast.error('Selecione pelo menos 2 OS');
       return;
     }
-    if (selected.length > 8) {
-      toast.error('Máximo 8 OS por roteiro. Reduza a seleção.');
+    if (selected.length > MAX_ROUTE_OS) {
+      toast.error(`Máximo ${MAX_ROUTE_OS} OS por roteiro. Reduza a seleção.`);
       return;
     }
 
@@ -4013,7 +4014,7 @@ const EditRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
 
   const handleRecalculate = async () => {
     if (orders.length < 2) { toast.error('Mínimo 2 OS para recalcular'); return; }
-    if (orders.length > 8) { toast.error('Máximo 8 OS por roteiro'); return; }
+    if (orders.length > MAX_ROUTE_OS) { toast.error(`Máximo ${MAX_ROUTE_OS} OS por roteiro`); return; }
     setOptimizing(true);
     try {
       // OS #1 is the fixed starting point

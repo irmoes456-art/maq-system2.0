@@ -21,7 +21,8 @@ import {
   Users,
   Webhook,
   Tag,
-  AlertTriangle
+  AlertTriangle,
+  Sparkles
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import {
@@ -68,6 +69,12 @@ const menuItems = [
     path: '/manuais', 
     label: 'Manuais', 
     icon: BookOpen 
+  },
+  {
+    path: '/mi',
+    label: 'Mi',
+    icon: Sparkles,
+    adminOnly: true,
   },
   { 
     path: '/whatsapp', 
