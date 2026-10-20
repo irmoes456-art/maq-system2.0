@@ -170,6 +170,7 @@ async def save_breadcrumb(point: BreadcrumbPoint, _: dict = Depends(verify_token
         "heading": point.heading,
         "speed": point.speed,
         "timestamp": point.timestamp or now,
+        "created_at": datetime.now(timezone.utc),  # TTL index (30 dias)
     })
     return {"ok": True}
 
@@ -180,7 +181,7 @@ async def get_breadcrumbs(route_id: str, _: dict = Depends(verify_token)):
     from server import mongo_db
     points = []
     async for doc in mongo_db["tracking_breadcrumbs"].find(
-        {"route_id": route_id}, {"_id": 0}
+        {"route_id": route_id}, {"_id": 0, "created_at": 0}
     ).sort("timestamp", 1):
         points.append(doc)
     return {"points": points}

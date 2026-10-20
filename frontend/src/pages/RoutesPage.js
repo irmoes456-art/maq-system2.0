@@ -286,6 +286,14 @@ const smoothHeading = (prev, next, alpha) => {
   return (prev + alpha * diff + 360) % 360;
 };
 
+// Rumo (graus, 0=norte) de a → b.
+const bearing = (a, b) => {
+  const toR = Math.PI / 180;
+  const y = Math.sin((b.lng - a.lng) * toR) * Math.cos(b.lat * toR);
+  const x = Math.cos(a.lat * toR) * Math.sin(b.lat * toR) - Math.sin(a.lat * toR) * Math.cos(b.lat * toR) * Math.cos((b.lng - a.lng) * toR);
+  return (Math.atan2(y, x) / toR + 360) % 360;
+};
+
 // Ponto a `meters` à frente de (lat,lng) na direção `heading` (graus).
 const pointAhead = (lat, lng, heading, meters) => {
   const h = heading * Math.PI / 180;
@@ -334,6 +342,9 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   const infoWindowRef = useRef(null);
   const allStepsRef = useRef([]);
   const lastSpokenRef = useRef(-1);
+  // Avisos em camadas já falados: `${stepIdx}:${metros}`.
+  const announcedRef = useRef(new Set());
+  const lastArrivalRef = useRef(null);
   const followModeRef = useRef(true);
   const voiceEnabledRef = useRef(false);
   const navPolylineRef = useRef(null); // Dynamic nav line from tech to next stop
@@ -432,14 +443,14 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
         }
       }).catch(() => {});
     } else {
-      // ADMIN mirror — poll live position every 5s and render moto marker +
-      // tech→customer polyline + sync stop_statuses (so admin sees current
-      // OS, in_progress, completed as the technician changes them).
+      // ADMIN mirror — Supabase Realtime (broadcast do técnico: gps/nav/statuses)
+      // + fetch inicial e fallback a cada 30s (late joiners / canal caído).
       const adminLineRef = { current: null };
-      const pollLive = async () => {
+      let lastLive = {};
+      const applyLive = (patch) => {
+        lastLive = { ...lastLive, ...patch };
+        const live = lastLive;
         try {
-          const res = await axios.get(`${API}/tracking/live/${routeId}`, headers);
-          const live = res.data;
           if (!live || !live.lat || !live.lng || live.active === false) return;
           if (!mapRef.current || !window.google) return;
           const motoSrc = _motoBase64Cache || MOTO_IMG_URL;
@@ -500,17 +511,30 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
               adminLineRef.current.setOptions({ strokeColor: lineColor });
             }
           }
+        } catch (_) { /* ignore */ }
+      };
+      const pollLive = async () => {
+        try {
+          const res = await axios.get(`${API}/tracking/live/${routeId}`, headers);
+          if (res.data) applyLive(res.data);
         } catch (_) { /* 404 expected when tech not started yet */ }
       };
       pollLive();
-      adminLivePollRef.current = setInterval(pollLive, 5000);
-      // Capture the polyline ref into outer cleanup
-      adminLiveMarkerRef.current = adminLiveMarkerRef.current; // no-op
-      // Save for cleanup
+      adminLivePollRef.current = setInterval(pollLive, 30000);
+      let adminChannel = null;
+      if (supabase) {
+        adminChannel = supabase.channel(`tracking-${routeId}`)
+          .on('broadcast', { event: 'gps' }, ({ payload }) => applyLive({ ...payload, active: true }))
+          .on('broadcast', { event: 'nav' }, ({ payload }) => applyLive(payload))
+          .on('broadcast', { event: 'statuses' }, ({ payload }) => applyLive(payload))
+          .on('broadcast', { event: 'end' }, () => applyLive({ active: false }))
+          .subscribe();
+      }
       const teardown = () => {
         if (adminLineRef.current) { adminLineRef.current.setMap(null); adminLineRef.current = null; }
       };
       return () => {
+        if (adminChannel) supabase.removeChannel(adminChannel);
         if (adminLivePollRef.current) { clearInterval(adminLivePollRef.current); adminLivePollRef.current = null; }
         if (adminLiveMarkerRef.current) { adminLiveMarkerRef.current.setMap(null); adminLiveMarkerRef.current = null; }
         teardown();
@@ -530,6 +554,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     if (Object.keys(stopStatuses).length === 0) return;
     if (stopStatusesPersistRef.current) clearTimeout(stopStatusesPersistRef.current);
     stopStatusesPersistRef.current = setTimeout(() => {
+      channelRef.current?.send({ type: 'broadcast', event: 'statuses', payload: { stop_statuses: stopStatuses } });
       axios.post(`${API}/tracking/session/stop-statuses`, {
         route_id: routeId, stop_statuses: stopStatuses
       }, token ? { headers: { Authorization: `Bearer ${token}` } } : {}).catch(() => {});
@@ -555,7 +580,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     window.speechSynthesis?.cancel();
     prevPosRef.current = null;
     allStepsRef.current = [];
-    lastSpokenRef.current = -1;
+    lastSpokenRef.current = -1; announcedRef.current.clear();
     setLocationActive(false);
     setFollowMode(true);
     setNextInstruction('');
@@ -607,7 +632,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     });
     const P = toXY({ lat, lng });
     let min = Infinity;
-    let best = { lat, lng };
+    let best = { lat, lng, seg: 0 };
     for (let i = 0; i < path.length - 1; i++) {
       const A = toXY(path[i]);
       const B = toXY(path[i + 1]);
@@ -627,7 +652,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
       const d = Math.sqrt(dx * dx + dy * dy);
       if (d < min) {
         min = d;
-        best = { lat: path[i].lat + t * (path[i + 1].lat - path[i].lat), lng: path[i].lng + t * (path[i + 1].lng - path[i].lng) };
+        best = { lat: path[i].lat + t * (path[i + 1].lat - path[i].lat), lng: path[i].lng + t * (path[i + 1].lng - path[i].lng), seg: i };
       }
     }
     return { ...best, d: min };
@@ -803,6 +828,10 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
           nav_destination_lat: nextStop.lat,
           nav_destination_lng: nextStop.lng,
         }, token ? { headers: { Authorization: `Bearer ${token}` } } : {}).catch(() => {});
+        channelRef.current?.send({
+          type: 'broadcast', event: 'nav',
+          payload: { nav_path: fullPath, nav_traffic_color: aggTrafficColor, active_os: nextStop.os_number },
+        });
       }
     } catch (e) {
       // Mantém a rota anterior desenhada. Só avisa o usuário se não havia nada.
@@ -829,31 +858,28 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   }, []);
 
   // Check voice navigation progress
+  // Avisos em camadas: 800/500/200m ("Em X metros, ...") e a instrução em si a <50m.
   const checkVoiceNavigation = useCallback((lat, lng) => {
     const steps = allStepsRef.current;
-    if (!steps.length) return;
-
-    // Find closest upcoming step
-    for (let i = 0; i < steps.length; i++) {
-      if (i <= lastSpokenRef.current) continue;
-      const step = steps[i];
-      if (!step.startLat || !step.startLng) continue;
-      const dist = haversine(lat, lng, step.startLat, step.startLng);
-
-      // Within 80m of step start → announce
-      if (dist < 80) {
+    const d = (k) => haversine(lat, lng, steps[k].startLat, steps[k].startLng);
+    let i = lastSpokenRef.current + 1;
+    // Pula steps já ultrapassados (o seguinte está a <50m).
+    while (i + 1 < steps.length && d(i + 1) < 50) i++;
+    if (i < steps.length && steps[i].instruction) {
+      const instr = steps[i].instruction;
+      const dist = d(i);
+      if (dist < 50) {
         lastSpokenRef.current = i;
-        const instr = step.instruction;
-        if (instr) {
-          setNextInstruction(instr);
-          speakInstruction(instr, voiceEnabledRef.current);
+        setNextInstruction(instr);
+        speakInstruction(instr, voiceEnabledRef.current);
+      } else {
+        const th = [200, 500, 800].find(t => dist <= t);
+        if (th && !announcedRef.current.has(`${i}:${th}`)) {
+          [200, 500, 800].filter(t => t >= th).forEach(t => announcedRef.current.add(`${i}:${t}`));
+          const msg = `Em ${th} metros, ${instr.charAt(0).toLowerCase()}${instr.slice(1)}`;
+          setNextInstruction(msg);
+          speakInstruction(msg, voiceEnabledRef.current);
         }
-        break;
-      }
-      // Within 200m → show preview
-      if (dist < 200 && i > lastSpokenRef.current) {
-        setNextInstruction(step.instruction || '');
-        break;
       }
     }
 
@@ -865,8 +891,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
       const dist = haversine(lat, lng, parseFloat(o.lat), parseFloat(o.lng));
       if (dist < 50) {
         const msg = `Você chegou na parada ${i + 1}. OS ${o.os_number}. ${o.customer_name || ''}`;
-        if (lastSpokenRef.current !== -(i + 100)) {
-          lastSpokenRef.current = -(i + 100);
+        if (lastArrivalRef.current !== i) {
+          lastArrivalRef.current = i;
           setNextInstruction(msg);
           speakInstruction(msg, voiceEnabledRef.current);
         }
@@ -883,12 +909,12 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
       if (locationMarkerRef.current) { locationMarkerRef.current.setMap(null); locationMarkerRef.current = null; }
-      if (channelRef.current && supabase) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
+      if (channelRef.current && supabase) { channelRef.current.send({ type: 'broadcast', event: 'end', payload: {} }); supabase.removeChannel(channelRef.current); channelRef.current = null; }
       if (animFrameRef.current) { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
       stopCameraLoop();
       window.speechSynthesis?.cancel();
       prevPosRef.current = null;
-      lastSpokenRef.current = -1;
+      lastSpokenRef.current = -1; announcedRef.current.clear();
       setLocationActive(false);
       setFollowMode(true);
       setNextInstruction('');
@@ -1024,7 +1050,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
         if (channelRef.current) {
           channelRef.current.send({
             type: 'broadcast', event: 'gps',
-            payload: { lat: newLat, lng: newLng, heading, speed, timestamp: Date.now() },
+            payload: { lat: dispLat, lng: dispLng, heading, speed, technician: userName || '', timestamp: Date.now() },
           });
         }
 
@@ -1059,9 +1085,12 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
         const now = Date.now();
         const lastNav = prevPosRef.current?._lastNavUpdate || 0;
         const path = currentNavPathRef.current;
-        const offRouteDist = distanceToPath(newLat, newLng, path);
-        const OFF_ROUTE_THRESHOLD_M = 120; // accounts for typical urban GPS drift
-        const isOffRoute = path.length > 0 && offRouteDist > OFF_ROUTE_THRESHOLD_M;
+        // Recálculo inteligente: limiar se adapta à precisão do GPS (50–120m) e
+        // detecta contramão (heading >135° oposto ao trecho da rota a >15km/h).
+        const OFF_ROUTE_THRESHOLD_M = Math.min(120, Math.max(50, (Number.isFinite(accuracy) ? accuracy : 20) * 1.5 + 30));
+        const wrongWay = path.length > 1 && speed > 15 && Number.isFinite(gpsHeading) && snap.d < OFF_ROUTE_THRESHOLD_M &&
+          Math.abs(((gpsHeading - bearing(path[snap.seg], path[snap.seg + 1]) + 540) % 360) - 180) > 135;
+        const isOffRoute = path.length > 0 && (snap.d > OFF_ROUTE_THRESHOLD_M || wrongWay);
         // Hysteresis: require consecutive off-route readings to avoid spurious recalcs
         const streak = (prevPosRef.current?._offRouteStreak || 0) + (isOffRoute ? 1 : 0);
         if (prevPosRef.current) prevPosRef.current._offRouteStreak = isOffRoute ? streak : 0;
@@ -1073,7 +1102,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
         const noLineYet = !navPolylineRef.current && navSegmentsRef.current.length === 0;
         const elapsed = now - lastNav;
 
-        if (noLineYet || targetChanged || (streak >= 3 && elapsed > 3000)) {
+        // 8s entre recálculos por desvio evita rajadas de chamadas à Routes API.
+        if (noLineYet || targetChanged || (streak >= 3 && elapsed > 8000)) {
           if (prevPosRef.current) {
             prevPosRef.current._lastNavUpdate = now;
             prevPosRef.current._offRouteStreak = 0;
@@ -1357,6 +1387,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
       }
     }
     allStepsRef.current = navSteps;
+    lastSpokenRef.current = -1; announcedRef.current.clear();
 
     setLegInfos(infos);
     const totalDist = legs.reduce((s, l) => s + (l.distanceMeters || 0), 0);
@@ -1834,7 +1865,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                 // do celular). `DEMO_MAP_ID` habilita vector rendering sem
                 // precisar criar um Map ID no Google Cloud. Em produção o user
                 // pode trocar por um Map ID próprio para estilos customizados.
-                mapId: 'DEMO_MAP_ID',
+                mapId: process.env.REACT_APP_GOOGLE_MAP_ID || 'DEMO_MAP_ID',
                 tilt: 45,
                 heading: 0,
                 rotateControl: true,

@@ -426,5 +426,14 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Bug corrigido: `prevPosRef` era recriado a cada fix, zerando `_offRouteStreak/_lastNavUpdate/_lastBreadcrumb` → off-route nunca recalculava e breadcrumb/gps ia a cada fix. Agora preservados (breadcrumb/gps a cada 10s como projetado).
 - Polling `/nav-leg` a cada 20s: se geometria nova a <25m da atual, troca só segmentos coloridos + ETA; senão redesenha.
 
+### 33. Fase 3 — Recálculo + Realtime + TTL (20/10/2026)
+- Recálculo inteligente: limiar off-route adaptativo pela precisão do GPS (50–120m), detecção de contramão (heading >135° oposto ao trecho a >15km/h), 3 leituras seguidas, mínimo 8s entre recálculos.
+- Realtime: `frontend/.env` não tinha `REACT_APP_SUPABASE_URL/ANON_KEY` → `supabase` era null (canal nunca existiu). Adicionados. Técnico faz broadcast em `tracking-{routeId}`: `gps` (cada fix, posição snapped), `nav` (rota+trânsito), `statuses`, `end`. Admin escuta o canal; polling caiu de 5s → 30s (fallback/late joiners). Broadcast validado no navegador (anon key).
+- TTL: `tracking_breadcrumbs.created_at` (Date) + índice TTL 30 dias criado no startup. Docs antigos sem created_at não expiram.
+
+### 34. Fase 4 — Instruções + Map ID
+- Voz em camadas: "Em 800/500/200 metros, …" e instrução a <50m; cada aviso falado 1x por step; pula steps ultrapassados. Bug corrigido: chegada em parada sobrescrevia `lastSpokenRef` (reiniciava os steps) → agora `lastArrivalRef`.
+- Map ID: `REACT_APP_GOOGLE_MAP_ID` (fallback `DEMO_MAP_ID`). Usuário precisa criar Map ID vetorial no Google Cloud e informar.
+
 ### Próximo
-- Fase 3: recálculo inteligente, Supabase Realtime no admin, TTL de breadcrumbs. Fase 4: avisos 800/500/200/50m, Map ID próprio.
+- Informar Map ID próprio; validar navegação em campo.

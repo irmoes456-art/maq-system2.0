@@ -225,6 +225,15 @@ async def startup_ensure_playwright_browser():
 
 
 @app.on_event("startup")
+async def startup_breadcrumb_ttl():
+    """Breadcrumbs de GPS expiram 30 dias após created_at (TTL index do Mongo)."""
+    try:
+        await mongo_db["tracking_breadcrumbs"].create_index("created_at", expireAfterSeconds=30 * 86400)
+    except Exception as e:
+        logger.error(f"breadcrumb TTL index error: {e}")
+
+
+@app.on_event("startup")
 async def startup_migrate():
     """Auto-migrate on startup: source names and status normalization"""
     try:
