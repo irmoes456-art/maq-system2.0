@@ -44,18 +44,28 @@ def init_storage():
     return storage_key
 
 
+# Arquivos ficam no Supabase Storage (bucket privado "manuais"): não dependem da Universal Key,
+# que muda entre preview/produção e fazia os downloads darem 500 no site publicado.
+SB_BUCKET_URL = f"{os.environ.get('SUPABASE_URL')}/storage/v1/object/manuais"
+
+
+def _sb_headers(extra=None):
+    k = os.environ["SUPABASE_SERVICE_KEY"]
+    return {"Authorization": f"Bearer {k}", "apikey": k, **(extra or {})}
+
+
 def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120
+    resp = requests.post(
+        f"{SB_BUCKET_URL}/{path}",
+        headers=_sb_headers({"Content-Type": content_type, "x-upsert": "true"}),
+        data=data, timeout=300
     )
     resp.raise_for_status()
     return resp.json()
 
 
-def get_object(path: str):
+def _legacy_get_object(path: str):
+    """Storage antigo (Emergent). Só leitura, para arquivos não migrados."""
     global storage_key
     key = init_storage()
     resp = requests.get(
@@ -69,6 +79,14 @@ def get_object(path: str):
             f"{STORAGE_URL}/objects/{path}",
             headers={"X-Storage-Key": init_storage()}, timeout=60
         )
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+
+def get_object(path: str):
+    resp = requests.get(f"{SB_BUCKET_URL}/{path}", headers=_sb_headers(), timeout=120)
+    if resp.status_code in (400, 404):
+        return _legacy_get_object(path)
     resp.raise_for_status()
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
@@ -355,9 +373,13 @@ def setup_manuais_routes(api_router: APIRouter, db, verify_token):
         # Use cached PDF if available; otherwise convert on-the-fly
         pdf_path = meta.get("pdf_cache_path")
         try:
+            pdf_bytes = None
             if pdf_path:
-                pdf_bytes, _ = await asyncio.to_thread(get_object, pdf_path)
-            else:
+                try:
+                    pdf_bytes, _ = await asyncio.to_thread(get_object, pdf_path)
+                except Exception:
+                    pdf_bytes = None  # cache inacessível (ex: storage antigo) → reconverte
+            if pdf_bytes is None:
                 pptx_bytes, _ = await asyncio.to_thread(get_object, doc["storage_path"])
                 pdf_bytes = await asyncio.to_thread(_convert_pptx_to_pdf, pptx_bytes)
                 # Persist for next time

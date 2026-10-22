@@ -5,6 +5,7 @@ Optimizations:
 - Address-based geocode cache (geocode_cache table) to avoid redundant Google API calls
 - Shared httpx client for connection reuse
 """
+import asyncio
 import logging
 import os
 import uuid
@@ -158,6 +159,9 @@ async def create_route(route_data: RouteCreate):
     route_dict["orders"] = [o.dict() if hasattr(o, 'dict') else o for o in route_dict["orders"]]
     await db.routes.insert_one(route_dict)
     route_dict.pop("_id", None)
+    # Mensagem de agendamento automática no WhatsApp para cada OS do roteiro.
+    from whatsapp_module import send_route_schedule
+    asyncio.create_task(send_route_schedule(db, dict(route_dict)))
     return route_dict
 
 
@@ -414,6 +418,7 @@ class NavLegRequest(BaseModel):
     origin_lng: float
     dest_lat: float
     dest_lng: float
+    origin_heading: Optional[int] = None  # 0-360, sentido do veículo
 
 
 @router.post("/nav-leg")
@@ -429,8 +434,11 @@ async def nav_leg(req: NavLegRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY not configured")
 
+    origin = {"location": {"latLng": {"latitude": req.origin_lat, "longitude": req.origin_lng}}}
+    if req.origin_heading is not None:
+        origin["location"]["heading"] = req.origin_heading % 360
     body = {
-        "origin": {"location": {"latLng": {"latitude": req.origin_lat, "longitude": req.origin_lng}}},
+        "origin": origin,
         "destination": {"location": {"latLng": {"latitude": req.dest_lat, "longitude": req.dest_lng}}},
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE_OPTIMAL",

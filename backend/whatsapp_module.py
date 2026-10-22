@@ -28,7 +28,12 @@ GRAPH_API_URL = "https://graph.facebook.com"
 GRAPH_API_VERSION = "v21.0"
 WA_APP_SECRET = os.environ.get("WA_APP_SECRET", "")
 WA_APP_ID = os.environ.get("WA_APP_ID", "")
-WA_PERMANENT_TOKEN = os.environ.get("WA_PERMANENT_TOKEN", "")
+WA_PERMANENT_TOKEN = os.environ.get("WA_APP_PERMANENT_TOKEN") or os.environ.get("WA_PERMANENT_TOKEN", "")
+WA_PHONE_NUMBER_ID = os.environ.get("WA_PHONE_NUMBER_ID", "")
+WA_WABA_ID = os.environ.get("WA_WABA_ID", "")
+SCHEDULE_TEMPLATE = "agendamento_os"
+SCHEDULE_TEXT = ("Olá, {{1}}! Aqui é da Mastermaq Assistência Técnica. Referente à OS {{2}} ({{3}}), "
+                 "podemos confirmar o agendamento para {{4}}?")
 
 # --- In-memory caches to avoid DB queries on every webhook ---
 _wa_config_cache = {"data": None, "ts": 0}
@@ -55,6 +60,59 @@ def get_saudacao():
     return "Boa noite"
 
 
+def _schedule_when(route_date: str) -> str:
+    """'hoje' se o roteiro é do dia (horário de Brasília), senão dd/mm/aaaa."""
+    from datetime import timedelta
+    today = (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            d = datetime.strptime((route_date or "")[:10], fmt).date()
+            return "hoje" if d == today else d.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    return route_date or "a data combinada"
+
+
+async def send_route_schedule(db, route: dict):
+    """Envia o template agendamento_os para o cliente de cada OS do roteiro recém-criado."""
+    if not (WA_PHONE_NUMBER_ID and WA_PERMANENT_TOKEN):
+        logger.warning("[WA] agendamento não enviado: WA_PHONE_NUMBER_ID/token ausentes")
+        return
+    when = _schedule_when(route.get("date"))
+    url = f"{GRAPH_API_URL}/{GRAPH_API_VERSION}/{WA_PHONE_NUMBER_ID}/messages"
+    client = await _get_shared_client()
+    for o in route.get("orders") or []:
+        os_doc = await db.service_orders.find_one({"os_number": o.get("os_number")}, {"phone1": 1, "product": 1, "model": 1, "customer_name": 1}) or {}
+        digits = "".join(c for c in (o.get("phone1") or os_doc.get("phone1") or "") if c.isdigit())
+        if len(digits) < 10:
+            logger.warning(f"[WA] OS {o.get('os_number')}: sem telefone válido, agendamento não enviado")
+            continue
+        phone = digits if digits.startswith("55") and len(digits) >= 12 else f"55{digits}"
+        name = (o.get("customer_name") or os_doc.get("customer_name") or "cliente").split()[0].title()
+        product = os_doc.get("product") or os_doc.get("model") or "seu equipamento"
+        params = [name, str(o.get("os_number")), product, when]
+        payload = {
+            "messaging_product": "whatsapp", "to": phone, "type": "template",
+            "template": {"name": SCHEDULE_TEMPLATE, "language": {"code": "pt_BR"},
+                         "components": [{"type": "body", "parameters": [{"type": "text", "text": p} for p in params]}]},
+        }
+        try:
+            resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {WA_PERMANENT_TOKEN}"})
+            ok = resp.status_code < 400
+            if not ok:
+                logger.error(f"[WA] agendamento OS {o.get('os_number')} falhou: {resp.text[:300]}")
+            await db.whatsapp_messages.insert_one({
+                "direction": "outbound", "to": phone, "type": "template",
+                "body": f"{SCHEDULE_TEMPLATE}: {' | '.join(params)}",
+                "wa_message_id": (resp.json().get("messages") or [{}])[0].get("id") if ok else None,
+                "status": "sent" if ok else "failed",
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.error(f"[WA] agendamento OS {o.get('os_number')} erro: {e!r}")
+
+
+
 def setup_whatsapp_routes(api_router: APIRouter, db, verify_token):
     """Register WhatsApp Business API routes"""
 
@@ -64,6 +122,11 @@ def setup_whatsapp_routes(api_router: APIRouter, db, verify_token):
         if not force_refresh and _wa_config_cache["data"] is not None and (now - _wa_config_cache["ts"]) < _CONFIG_TTL:
             return _wa_config_cache["data"]
         config = await db.whatsapp_config.find_one({}, {"_id": 0})
+        # IDs do .env têm prioridade sobre a config salva no banco.
+        if WA_PHONE_NUMBER_ID:
+            config = {**(config or {}), "phone_number_id": WA_PHONE_NUMBER_ID}
+        if WA_WABA_ID:
+            config = {**(config or {}), "waba_id": WA_WABA_ID}
         _wa_config_cache["data"] = config
         _wa_config_cache["ts"] = now
         return config
@@ -509,6 +572,23 @@ def setup_whatsapp_routes(api_router: APIRouter, db, verify_token):
             logger.error(f"Auto-reply error: {e}")
 
     # --- Get Templates ---
+    @api_router.post("/whatsapp/templates/agendamento")
+    async def create_schedule_template(_: dict = Depends(verify_token)):
+        """Cria e envia para aprovação da Meta o template agendamento_os (pt_BR, UTILITY)."""
+        if not WA_WABA_ID:
+            raise HTTPException(status_code=400, detail="WA_WABA_ID não configurado")
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{GRAPH_API_URL}/{GRAPH_API_VERSION}/{WA_WABA_ID}/message_templates",
+                headers={"Authorization": f"Bearer {WA_PERMANENT_TOKEN}"},
+                json={"name": SCHEDULE_TEMPLATE, "language": "pt_BR", "category": "UTILITY",
+                      "components": [{"type": "BODY", "text": SCHEDULE_TEXT,
+                                      "example": {"body_text": [["Maria", "73069831", "Lavadora", "hoje"]]}}]},
+            )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=resp.json())
+        return resp.json()
+
     @api_router.get("/whatsapp/templates")
     async def get_templates(_: dict = Depends(verify_token)):
         config = await get_wa_config()

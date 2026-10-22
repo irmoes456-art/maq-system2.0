@@ -382,6 +382,10 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   // atualizar as cores de congestionamento e o tempo com trânsito SEM mudar
   // a geometria da rota (atualização BARATA — distinta do recálculo completo).
   const trafficPollRef = useRef(null);
+  const navReqSeqRef = useRef(0);
+  // Refs "sempre atuais" para o callback do watchPosition (criado 1x ao iniciar a navegação).
+  const stopStatusesRef = useRef({});
+  const updateNavLineRef = useRef(null);
   // Timestamp do último heading vindo do GPS (em movimento). Bússola só assume após 3s sem GPS.
   const lastGpsHeadingTsRef = useRef(0);
 
@@ -699,12 +703,18 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     if (!hasExistingRoute) {
       setNextInstruction('Calculando rota...');
     }
+    // Só a resposta da chamada mais recente desenha (evita GPS e polling apagando a linha um do outro).
+    const seq = ++navReqSeqRef.current;
+    // Heading de origem: Google começa a rota no sentido em que o carro anda (respeita mão/contramão).
+    const movingHeading = Date.now() - lastGpsHeadingTsRef.current < 5000 ? Math.round(headingRef.current) % 360 : null;
 
     try {
       const res = await axios.post(`${API}/routes/nav-leg`, {
         origin_lat: techLat, origin_lng: techLng,
         dest_lat: nextStop.lat, dest_lng: nextStop.lng,
+        origin_heading: movingHeading,
       }, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+      if (seq !== navReqSeqRef.current) return;
 
       const data = res.data || {};
       const encoded = data.encoded_polyline;
@@ -1064,12 +1074,12 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
 
           // Also upsert live position (for admin live-mirror & public tracking pages).
           // Find which OS is currently being attended or transit-targeted.
-          const activeOSEntry = sorted.find(s => ['in_progress','in_transit'].includes(stopStatuses[s.os_number]));
+          const activeOSEntry = sorted.find(s => ['in_progress','in_transit'].includes(stopStatusesRef.current[s.os_number]));
           axios.post(`${API}/tracking/gps`, {
             route_id: routeId, lat: newLat, lng: newLng, heading, speed,
             technician: userName || '',
             active_os: activeOSEntry?.os_number || null,
-            active_status: activeOSEntry ? stopStatuses[activeOSEntry.os_number] : null,
+            active_status: activeOSEntry ? stopStatusesRef.current[activeOSEntry.os_number] : null,
           }, token ? { headers: { Authorization: `Bearer ${token}` } } : {}).catch(() => {});
         }
 
@@ -1096,7 +1106,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
         const streak = (prevPosRef.current?._offRouteStreak || 0) + (isOffRoute ? 1 : 0);
         if (prevPosRef.current) prevPosRef.current._offRouteStreak = isOffRoute ? streak : 0;
         const upcoming = routeData?.sorted?.find(o => {
-          const status = stopStatuses[o.os_number];
+          const status = stopStatusesRef.current[o.os_number];
           return !status || status === 'pending' || status === 'arrived' || status === 'in_transit';
         });
         const targetChanged = upcoming && upcoming.os_number !== currentNavTargetRef.current;
@@ -1110,7 +1120,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
             prevPosRef.current._offRouteStreak = 0;
           }
           if (streak >= 3) setNextInstruction('Recalculando rota...');
-          updateNavLine(newLat, newLng);
+          // Ref: a versão capturada no início usaria stopStatuses antigos e brigaria com o polling.
+          updateNavLineRef.current(newLat, newLng);
         }
 
         // Geofencing: auto-detect arrival at stops (within 100m)
@@ -1144,8 +1155,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   }, [routeId, token, animateMarker, checkVoiceNavigation, routeData, updateNavLine, isTechnician, userName, startCameraLoop]);
 
   // Polling leve de trânsito/ETA a cada 20s (não redesenha a rota se a geometria não mudou).
-  const updateNavLineRef = useRef(updateNavLine);
-  useEffect(() => { updateNavLineRef.current = updateNavLine; }, [updateNavLine]);
+  updateNavLineRef.current = updateNavLine;
+  stopStatusesRef.current = stopStatuses;
   useEffect(() => {
     if (!locationActive) return undefined;
     trafficPollRef.current = setInterval(() => {

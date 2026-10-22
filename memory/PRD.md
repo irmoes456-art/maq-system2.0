@@ -449,5 +449,16 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Manuais: índice sincroniza no upload e na exclusão (background), reindexa arquivo substituído, remove apagados; 10 trechos por pergunta.
 - Formato: prompt proíbe tabelas/'|'/'---'/'>'; frontend renderiza listas e descarta tabelas/separadores residuais.
 
-### Próximo
-- Informar Map ID próprio; validar navegação em campo. Recarregar saldo da Universal Key para a Mi responder.
+### 37. Rota de navegação (22/10/2026)
+- Bug: callback do watchPosition (criado 1x) usava `updateNavLine`/`stopStatuses` antigos e brigava com o polling de 20s (cada um desenhava para um destino → linha sumia/piscava). Agora usa `updateNavLineRef`/`stopStatusesRef` + `navReqSeqRef` (só a resposta mais recente desenha).
+- Contramão: `/nav-leg` recebe `origin_heading` (sentido do carro, se GPS deu heading nos últimos 5s) → Google começa a rota no sentido certo da via.
+
+### 38. Manuais 500 em produção
+- Causa: arquivos no object storage da Emergent, ligado à EMERGENT_LLM_KEY (gerenciada; diferente em produção) → 404 → 500.
+- Fix: storage agora é Supabase Storage (bucket privado `manuais`, mesmos paths). 56 manuais migrados (`migrate_manuais_to_supabase.py`, idempotente). `get_object` lê Supabase e cai no storage antigo se não achar. Slide preview reconverte se o cache PDF antigo não abrir. PDFs de "Enviar Cópia" novos também vão p/ Supabase.
+
+### 39. WhatsApp — agendamento automático ao criar roteiro
+- `send_route_schedule` (whatsapp_module) dispara em background no `POST /api/routes/`: template `agendamento_os` (pt_BR) com {{1}} primeiro nome, {{2}} OS, {{3}} produto, {{4}} "hoje" ou dd/mm/aaaa. Registra em whatsapp_messages (sent/failed).
+- `POST /api/whatsapp/templates/agendamento` cria o template na Meta (precisa WA_WABA_ID).
+- Env: WA_PHONE_NUMBER_ID=6157853032091 (fornecido), token = WA_APP_PERMANENT_TOKEN. PENDENTE: Meta responde que o ID não existe/sem permissão para os 2 tokens; falta WA_WABA_ID e atribuir a WABA ao system user.
+
