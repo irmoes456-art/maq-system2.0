@@ -626,6 +626,7 @@ OS_STATUS_COLORS = {
     "Aguardando Confirmação Cliente": {"bg": "#E0F2FE", "text": "#0369A1"},
     "Aguardando Produto": {"bg": "#FFEDD5", "text": "#C2410C"},
     "OS Cancelada": {"bg": "#FEE2E2", "text": "#7F1D1D"},
+    "Visita Realizada": {"bg": "#CCFBF1", "text": "#0F766E"},
     "AGUARDANDO ANÁLISE": {"bg": "#FEF3C7", "text": "#92400E"},
 }
 

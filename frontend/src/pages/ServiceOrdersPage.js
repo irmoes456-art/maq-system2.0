@@ -136,10 +136,12 @@ const OS_STATUSES = [
   "Aguardando Confirmação Cliente",
   "Aguardando Produto",
   "OS Cancelada",
-  "Aguardando Pagamento"
+  "Aguardando Pagamento",
+  "Visita Realizada"
 ];
 
 const STATUS_COLORS = {
+  "Visita Realizada": { bg: "#CCFBF1", text: "#0F766E" },
   "Aguardando Pagamento": { bg: "#FFF7ED", text: "#C2410C" },
   "Aguardando Peças": { bg: "#FEF3C7", text: "#92400E" },
   "Aguardando Conserto": { bg: "#F3E8FF", text: "#7C3AED" },
@@ -1132,7 +1134,11 @@ const fetchOrders = useCallback(async () => {
                                 Prioridade
                               </Badge>
                             )}
-                            {(order.source === 'telecontrol_hisense' || order.source === 'telecontrol') && (
+                            {/Taxa de visita PAGA/i.test(order.observations || '') && (
+                              <Badge className="text-xs bg-green-600 text-white border-green-600" data-testid={`taxa-paga-badge-${order.os_number}`}>
+                                Taxa paga
+                              </Badge>
+                            )}
                               <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-blue-300 text-blue-600 font-medium" data-testid={`badge-hisense-${order.os_number}`}>
                                 Telecontrol Hisense
                               </Badge>

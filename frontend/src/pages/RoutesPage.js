@@ -1288,14 +1288,13 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
 
     const path = window.google.maps.geometry.encoding.decodePath(route.polyline.encodedPolyline);
 
-    // Shadow polyline (route overview - lighter when navigating)
+    // Shadow polyline (contorno da rota planejada)
     polylineRef.current.push(new window.google.maps.Polyline({
-      path, geodesic: true, strokeColor: '#9CA3AF', strokeOpacity: 0.2, strokeWeight: 8, map, zIndex: 1,
+      path, geodesic: true, strokeColor: '#0b3d91', strokeOpacity: 0.35, strokeWeight: 9, map, zIndex: 1,
     }));
-    // Main polyline (route overview - dashed gray to show planned route)
+    // Rota planejada em azul sólido (o cinza tracejado sumia sob a camada de trânsito)
     polylineRef.current.push(new window.google.maps.Polyline({
-      path, geodesic: true, strokeColor: '#9CA3AF', strokeOpacity: 0.5, strokeWeight: 3, map, zIndex: 2,
-      icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.5, scale: 3 }, offset: '0', repeat: '15px' }],
+      path, geodesic: true, strokeColor: '#1a73e8', strokeOpacity: 0.9, strokeWeight: 5, map, zIndex: 2,
     }));
 
     const bounds = new window.google.maps.LatLngBounds();
@@ -3199,7 +3198,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
                           <td className="p-2 truncate max-w-[150px]">{o.customer_name}</td>
                           <td className="p-2 truncate max-w-[100px]">{o.neighborhood}</td>
                           <td className="p-2 hidden md:table-cell">{o.city}</td>
-                          <td className="p-2 hidden lg:table-cell">{o.phone1}</td>
+                          <td className="p-2 hidden lg:table-cell">{userRole !== 'technician' ? o.phone1 : ''}</td>
                           <td className="p-2 hidden lg:table-cell text-xs">{getFullServiceType(o)}</td>
                           <td className="p-2"><Badge variant="outline" className="text-xs">{o.status}</Badge></td>
                         </tr>
@@ -3226,7 +3225,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
                           </div>
                           <div className="text-xs text-gray-600 truncate mt-0.5">{o.customer_name}</div>
                           <div className="text-xs text-gray-400 truncate">{o.neighborhood} - {o.city}</div>
-                          {o.phone1 && <div className="text-xs text-gray-400">{o.phone1}</div>}
+                          {o.phone1 && userRole !== 'technician' && <div className="text-xs text-gray-400">{o.phone1}</div>}
                         </div>
                       </div>
                     </div>
@@ -3351,7 +3350,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
                         <div className="font-medium text-sm">OS {o.os_number} - {o.customer_name}</div>
                         <div className="text-xs text-gray-500 truncate">
                           {o.address && <span>{o.address} {o.number}, </span>}
-                          {o.neighborhood} - {o.city} | {o.phone1}
+                          {o.neighborhood} - {o.city}{userRole !== 'technician' && o.phone1 ? ` | ${o.phone1}` : ''}
                         </div>
                       </div>
                       <div className="flex items-center gap-1 flex-shrink-0">
@@ -3742,7 +3741,7 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
                     </Button>
                   </div>
                   <div className="text-xs text-gray-500">{o.address} {o.number}, {o.neighborhood} - {o.city}</div>
-                  {o.phone1 && <div className="text-xs text-gray-500"><Phone className="h-3 w-3 inline mr-1" />{o.phone1}</div>}
+                  {o.phone1 && userRole !== 'technician' && <div className="text-xs text-gray-500"><Phone className="h-3 w-3 inline mr-1" />{o.phone1}</div>}
                   {/* ETA - Previsão de chegada (Slider) */}
                   <div className="mt-2 space-y-2">
                     <div className="flex items-center gap-3">
@@ -4245,7 +4244,7 @@ const EditRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
                       >
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium truncate">OS {o.os_number} - {o.customer_name}</div>
-                          <div className="text-xs text-gray-500 truncate">{o.neighborhood} - {o.city} | {o.phone1}</div>
+                          <div className="text-xs text-gray-500 truncate">{o.neighborhood} - {o.city}{userRole !== 'technician' && o.phone1 ? ` | ${o.phone1}` : ''}</div>
                         </div>
                         <div className="text-green-600 shrink-0 ml-2">
                           <Plus className="h-4 w-4" />

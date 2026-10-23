@@ -457,7 +457,14 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Causa: arquivos no object storage da Emergent, ligado à EMERGENT_LLM_KEY (gerenciada; diferente em produção) → 404 → 500.
 - Fix: storage agora é Supabase Storage (bucket privado `manuais`, mesmos paths). 56 manuais migrados (`migrate_manuais_to_supabase.py`, idempotente). `get_object` lê Supabase e cai no storage antigo se não achar. Slide preview reconverte se o cache PDF antigo não abrir. PDFs de "Enviar Cópia" novos também vão p/ Supabase.
 
-### 39. WhatsApp — agendamento automático ao criar roteiro
+### 40. Sessão 23/10/2026
+- Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
+- Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.
+- Status "Visita Realizada" (front OS_STATUSES/cores + backend OS_STATUS_COLORS). PUT /routes/{id} com status "Concluído" → todas as OSs do roteiro viram "Visita Realizada".
+- Badge verde "Taxa paga" no card de OS quando observations contém "Taxa de visita PAGA".
+- Mi agent (`mi_agent.py`): memória permanente por usuário (`mi_memories`), ações via bloco `<acoes>` (remember, generate_pdf imediatos; create_route/update_route/update_os pendentes com Confirmar/Cancelar em `mi_actions`), anexos PDF/DOCX/TXT (`/mi/upload`) para ler/editar e devolver em PDF (reportlab → Supabase → /api/files/temp-pdf). update_os acrescenta observações (não apaga).
+- Regionais de Sabará (6) no prompt + contexto de OSs por regional.
+
 - `send_route_schedule` (whatsapp_module) dispara em background no `POST /api/routes/`: template `agendamento_os` (pt_BR) com {{1}} primeiro nome, {{2}} OS, {{3}} produto, {{4}} "hoje" ou dd/mm/aaaa. Registra em whatsapp_messages (sent/failed).
 - `POST /api/whatsapp/templates/agendamento` cria o template na Meta (precisa WA_WABA_ID).
 - Env: WA_PHONE_NUMBER_ID=6157853032091 (fornecido), token = WA_APP_PERMANENT_TOKEN. PENDENTE: Meta responde que o ID não existe/sem permissão para os 2 tokens; falta WA_WABA_ID e atribuir a WABA ao system user.

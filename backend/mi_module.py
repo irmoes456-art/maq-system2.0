@@ -11,9 +11,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
 
+import mi_agent
 from manuais_module import get_object, _convert_pptx_to_pdf
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,7 @@ async def _ollama_chat(prompt: str) -> str:
             f"{os.environ['OLLAMA_BASE_URL']}/api/chat",
             headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
             json={"model": os.environ["OLLAMA_MODEL"], "stream": False,
-                  "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]},
+                  "messages": [{"role": "system", "content": SYSTEM_FULL}, {"role": "user", "content": prompt}]},
         )
         r.raise_for_status()
         return (r.json().get("message", {}).get("content") or "").strip()
@@ -242,6 +243,12 @@ async def _ollama_chat(prompt: str) -> str:
 class ChatBody(BaseModel):
     message: str
     conversation_id: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_text: Optional[str] = None
+
+
+SYSTEM_FULL = (SYSTEM + "\nREGIONAIS DE SABARÁ (use para localizar OSs e montar roteiros):\n" + mi_agent.regions_text()
+               + "\n\n" + mi_agent.ACTIONS_PROMPT)
 
 
 def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
@@ -277,6 +284,44 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             "indexando": _index_state["running"],
         }
 
+    @api_router.post("/mi/upload")
+    async def mi_upload(file: UploadFile = File(...), _: dict = Depends(require_admin)):
+        data = await file.read()
+        try:
+            text = await asyncio.to_thread(mi_agent.extract_upload, data, file.filename or "")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"name": file.filename, "text": text[:60000], "chars": len(text)}
+
+    @api_router.get("/mi/memories")
+    async def list_memories(payload: dict = Depends(require_admin)):
+        return await mi_agent.get_memories(mongo_db, payload["email"])
+
+    @api_router.delete("/mi/memories/{mid}")
+    async def delete_memory(mid: str, payload: dict = Depends(require_admin)):
+        await mongo_db["mi_memories"].delete_one({"id": mid, "user_email": payload["email"]})
+        return {"ok": True}
+
+    async def _set_action_status(aid, status, result):
+        await mongo_db["mi_actions"].update_one({"id": aid}, {"$set": {"status": status, "result": result}})
+        await msgs.update_one({"actions.id": aid}, {"$set": {"actions.$.status": status, "actions.$.result": result}})
+
+    @api_router.post("/mi/actions/{aid}/{decision}")
+    async def decide_action(aid: str, decision: str, payload: dict = Depends(require_admin)):
+        act = await mongo_db["mi_actions"].find_one({"id": aid, "user_email": payload["email"]}, {"_id": 0})
+        if not act or act["status"] != "pending":
+            raise HTTPException(status_code=404, detail="Ação não encontrada ou já decidida")
+        if decision == "cancel":
+            await _set_action_status(aid, "canceled", "Cancelada")
+            return {"status": "canceled", "result": "Cancelada"}
+        try:
+            result = await mi_agent.execute(db, act["action"])
+            status = "done"
+        except Exception as e:
+            result, status = f"Erro: {e}", "error"
+        await _set_action_status(aid, status, result)
+        return {"status": status, "result": result}
+
     @api_router.post("/mi/chat")
     async def mi_chat(body: ChatBody, payload: dict = Depends(require_admin)):
         text = (body.message or "").strip()
@@ -296,13 +341,20 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             asyncio.create_task(index_manuals(db, mongo_db))
 
         history = await msgs.find({"conversation_id": cid}, {"_id": 0}).sort("created_at", -1).to_list(10)
-        await msgs.insert_one({"id": str(uuid.uuid4()), "conversation_id": cid, "role": "user", "content": text, "created_at": now})
+        await msgs.insert_one({"id": str(uuid.uuid4()), "conversation_id": cid, "role": "user", "content": text,
+                               "attachment_name": body.attachment_name, "attachment_text": body.attachment_text, "created_at": now})
+        attach = body.attachment_text and (body.attachment_name, body.attachment_text)
+        if not attach:
+            prev = await msgs.find_one({"conversation_id": cid, "attachment_text": {"$nin": [None, ""]}}, {"_id": 0}, sort=[("created_at", -1)])
+            attach = prev and (prev["attachment_name"], prev["attachment_text"])
+        memories = await mi_agent.get_memories(mongo_db, email)
 
         await _load_os(db)
         hist_q = " ".join(m["content"] for m in history if m["role"] == "user")[-400:]
         os_hits = _search_os(f"{text} {hist_q}")
         man_hits = await _search_manuals(mongo_db, f"{text} {hist_q[-150:]}", limit=10)
         geo_txt = _geo_context(text) or _geo_context(f"{text} {hist_q}")
+        region_txt = mi_agent.region_context(text, _os_cache["docs"])
         routes_txt = await _routes_context(db)
         titles = [d["title"] async for d in mongo_db["mi_manual_index"].find({}, {"title": 1})]
 
@@ -311,9 +363,12 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         hist_txt = "\n".join(f"{'Usuário' if m['role'] == 'user' else 'Mi'}: {m['content'][:1500]}" for m in reversed(history))
         prompt = (
             f"Data de hoje: {datetime.now().strftime('%d/%m/%Y')}\n\n"
-            f"## Resumo do banco de OSs\n{_os_cache['stats']}\n\n"
+            + ("## Memória permanente (fatos que o usuário pediu para lembrar)\n" + "\n".join(f"- {m['fact']}" for m in memories) + "\n\n" if memories else "")
+            + (f"## Documento anexado: {attach[0]}\n{attach[1][:40000]}\n\n" if attach else "")
+            + f"## Resumo do banco de OSs\n{_os_cache['stats']}\n\n"
             f"## OSs relacionadas à pergunta\n{os_txt}\n\n"
             + (f"## Localização (OSs próximas, calculado pelas coordenadas)\n{geo_txt}\n\n" if geo_txt else "")
+            + (f"## OSs por regional de Sabará\n{region_txt}\n\n" if region_txt else "")
             + f"## Roteiros recentes (30 últimos)\n{routes_txt}\n\n"
             f"## Manuais disponíveis\n" + "\n".join(f"- {t}" for t in titles) + "\n\n"
             f"## Trechos de manuais relevantes\n{man_txt}\n\n"
@@ -322,7 +377,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         )
         try:
             from emergentintegrations.llm.chat import LlmChat, UserMessage
-            chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"mi-{cid}", system_message=SYSTEM).with_model("openai", MODEL)
+            chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"mi-{cid}", system_message=SYSTEM_FULL).with_model("openai", MODEL)
             answer = (await chat.send_message(UserMessage(text=prompt)) or "").strip()
         except Exception as e:
             logger.warning(f"[Mi] Universal Key falhou, usando Ollama: {e!r}")
@@ -332,8 +387,28 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
                 logger.error(f"[Mi] Ollama falhou: {e2!r}")
                 raise HTTPException(status_code=424, detail="Falha ao consultar a IA (Universal Key e Ollama).")
 
+        answer, acts = mi_agent.parse_actions(answer)
+        actions = []
+        for a in acts:
+            aid = str(uuid.uuid4())
+            if a["type"] == "remember":
+                await mi_agent.remember(mongo_db, email, a.get("fact"))
+                actions.append({"id": aid, "type": "remember", "summary": f"Memorizado: {a.get('fact')}", "status": "done"})
+            elif a["type"] == "generate_pdf":
+                try:
+                    url = await mi_agent.generate_pdf(a.get("title"), a.get("content"))
+                    actions.append({"id": aid, "type": "pdf", "summary": a.get("title") or "Documento", "status": "done", "url": url})
+                except Exception as e:
+                    logger.error(f"[Mi] PDF falhou: {e!r}")
+                    actions.append({"id": aid, "type": "pdf", "summary": "Falha ao gerar PDF", "status": "error"})
+            elif a["type"] in mi_agent.CONFIRM_TYPES:
+                await mongo_db["mi_actions"].insert_one({"id": aid, "user_email": email, "conversation_id": cid, "action": a,
+                                                         "status": "pending", "created_at": now})
+                actions.append({"id": aid, "type": a["type"], "summary": mi_agent.summarize(a), "status": "pending"})
+
         done = datetime.now(timezone.utc).isoformat()
-        reply = {"id": str(uuid.uuid4()), "conversation_id": cid, "role": "assistant", "content": answer, "created_at": done}
+        reply = {"id": str(uuid.uuid4()), "conversation_id": cid, "role": "assistant", "content": answer,
+                 "actions": actions, "created_at": done}
         await msgs.insert_one(dict(reply))
         await convs.update_one({"id": cid}, {"$set": {"updated_at": done}})
         return {"conversation_id": cid, "title": conv["title"], "message": reply}

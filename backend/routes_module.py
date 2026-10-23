@@ -176,6 +176,14 @@ async def update_route(route_id: str, route_update: RouteUpdate):
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Route not found")
     route = await db.routes.find_one({"id": route_id}, {"_id": 0})
+    # Roteiro concluído → todas as OSs dele viram "Visita Realizada".
+    if update_data.get("status") == "Concluído":
+        for o in route.get("orders") or []:
+            if o.get("os_number"):
+                await db.service_orders.update_one(
+                    {"os_number": o["os_number"]},
+                    {"$set": {"status": "Visita Realizada", "updated_at": update_data["updated_at"]}},
+                )
     return route
 
 
