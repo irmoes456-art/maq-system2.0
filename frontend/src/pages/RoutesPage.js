@@ -316,7 +316,7 @@ const speakInstruction = (text, enabled) => {
   window.speechSynthesis.speak(utter);
 };
 
-const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, userRole = 'admin', userName = '' }) => {
+const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, userRole = 'admin', userName = '', onReorder = null }) => {
   const isTechnician = userRole === 'technician';
   const mapRef = useRef(null);
   const [loading, setLoading] = useState(true);
@@ -1484,6 +1484,12 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   }, [routeData, drawRouteOnMap]);
 
   const sorted = routeData?.sorted || [];
+  // Reordena a parada e devolve a lista com sequence 1..N (o pai salva no roteiro).
+  const moveStop = (i, dir) => {
+    const arr = [...sorted];
+    [arr[i], arr[i + dir]] = [arr[i + dir], arr[i]];
+    onReorder(arr.map((o, idx) => ({ ...o, sequence: idx + 1 })));
+  };
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) cleanup(); onClose(v); }}>
@@ -1584,6 +1590,12 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
 
                   return (
                   <div key={o.os_number} className={`flex items-start gap-2 px-2 py-2 rounded-lg border transition-colors group ${statusColors[status]}`} data-testid={`map-stop-${o.os_number}`}>
+                    {onReorder && (
+                      <div className="flex flex-col -my-1">
+                        <button disabled={i === 0} onClick={() => moveStop(i, -1)} className="text-[10px] text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-up-${o.os_number}`}>▲</button>
+                        <button disabled={i === sorted.length - 1} onClick={() => moveStop(i, 1)} className="text-[10px] text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-down-${o.os_number}`}>▼</button>
+                      </div>
+                    )}
                     <div className={`w-6 h-6 rounded-full text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5 ${dotColors[status]}`}>
                       {status === 'completed' ? '✓' : i + 1}
                     </div>
@@ -3611,6 +3623,24 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
     finally { setSaving(false); }
   };
 
+  // Abre o roteiro inteiro no Google Maps (base → OSs na ordem → base; até 9 paradas).
+  const openGoogleMaps = () => {
+    const stops = [...orders].sort((a, b) => (a.sequence || 0) - (b.sequence || 0)).filter(o => o.lat && o.lng);
+    if (!stops.length) { toast.error('Nenhuma OS com localização'); return; }
+    const base = `${BASE_LAT},${BASE_LNG}`;
+    const wp = stops.map(o => `${o.lat},${o.lng}`).join('|');
+    window.open(`https://www.google.com/maps/dir/?api=1&origin=${base}&destination=${base}&waypoints=${encodeURIComponent(wp)}&travelmode=driving`, '_blank');
+  };
+
+  const handleReorder = async (newOrders) => {
+    setOrders(newOrders);
+    try {
+      await axios.put(`${API}/routes/${route.id}`, { orders: newOrders }, getAuthHeader());
+      toast.success('Ordem do roteiro atualizada');
+      onUpdated();
+    } catch { toast.error('Erro ao salvar nova ordem'); }
+  };
+
   const handlePrint = () => {
     const printContent = `
       <html><head><style>
@@ -3625,7 +3655,7 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
         <p><strong>Tecnico:</strong> ${route.technician} | <strong>Data:</strong> ${route.date} | <strong>Distancia:</strong> ${route.total_distance || 'N/A'} | <strong>Tempo:</strong> ${route.total_duration || 'N/A'}</p>
         <table>
           <tr><th>#</th><th>N OS</th><th>CLIENTE</th><th>BAIRRO</th><th>CIDADE</th><th>TELEFONE</th><th>CONCLUSAO</th><th>OBS</th></tr>
-          ${orders.map(o => `<tr><td>${o.sequence || ''}</td><td>${o.os_number}</td><td>${o.customer_name || ''}</td><td>${o.neighborhood || ''}</td><td>${o.city || ''}</td><td>${o.phone1 || ''}</td><td>${o.conclusion || ''}</td><td>${o.observation || ''}</td></tr>`).join('')}
+          ${orders.map(o => `<tr><td>${o.sequence || ''}</td><td>${o.os_number}</td><td>${o.customer_name || ''}</td><td>${o.neighborhood || ''}</td><td>${o.city || ''}</td><td>${userRole !== 'technician' ? (o.phone1 || '') : ''}</td><td>${o.conclusion || ''}</td><td>${o.observation || ''}</td></tr>`).join('')}
         </table>
       </body></html>`;
     const iframe = document.createElement('iframe');
@@ -3692,6 +3722,9 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
             </Button>
             <Button variant="outline" size="sm" onClick={() => setShowMapDialog(true)} className="text-blue-600 border-blue-300 hover:bg-blue-50" data-testid="view-route-map-btn">
               <MapIcon className="h-3 w-3 mr-1" />Ver Mapa
+            </Button>
+            <Button variant="outline" size="sm" onClick={openGoogleMaps} className="text-green-700 border-green-300 hover:bg-green-50" data-testid="route-send-maps-btn">
+              <Navigation className="h-3 w-3 mr-1" />Enviar Maps
             </Button>
             <Button variant="outline" size="sm" onClick={handlePrint} data-testid="route-print-btn"><Printer className="h-3 w-3 mr-1" />Imprimir</Button>
             <Button variant="outline" size="sm" onClick={handleWhatsApp} data-testid="route-whatsapp-btn"><MessageCircle className="h-3 w-3 mr-1" />WhatsApp</Button>
@@ -3888,6 +3921,7 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
           routeId={route.id}
           userRole={userRole}
           userName={userName}
+          onReorder={handleReorder}
         />
       </DialogContent>
     </Dialog>

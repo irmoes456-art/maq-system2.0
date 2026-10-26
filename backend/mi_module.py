@@ -22,13 +22,17 @@ MODEL = "gpt-5.4"
 
 OS_FIELDS = [
     "os_number", "customer_name", "status", "source", "brand", "model", "product", "service_type",
-    "reported_defect", "technical_diagnosis", "required_parts", "address", "number", "city", "neighborhood",
-    "lat", "lng", "serial_number",
+    "reported_defect", "technical_diagnosis", "required_parts", "address", "number", "complement", "city", "neighborhood",
+    "reference_point", "cep", "phone2", "email", "visit_fee_paid", "lat", "lng", "serial_number",
     "registration_date", "attendance_date", "technician", "phone1", "observations", "updated_at",
 ]
 STOP = set("""a o as os um uma de da do das dos em no na nos nas e ou que qual quais quanto quantos quantas
 como para por com sem se ser sao tem ter foi esta estao isso esse essa este me meu minha voce mi
-qual sobre mais menos muito todas todos tudo pelo pela ate ja nao sim ola oi""".split())
+qual sobre mais menos muito todas todos tudo pelo pela ate ja nao sim ola oi cliente clientes ordem ordens
+servico roteiro roteiros rota rotas onde quem liste listar lista mostre mostrar encontre encontrar informe favor
+pode poderia preciso quero saber dados informacao informacoes""".split())
+_llm_state = {"openai_off_until": 0.0}
+_routes_cache = {"ts": 0.0, "docs": []}
 
 _os_cache = {"ts": 0.0, "docs": [], "blobs": [], "stats": ""}
 _os_lock = asyncio.Lock()
@@ -70,7 +74,8 @@ def _search_os(q: str, limit: int = 25):
     nums = set(re.findall(r"\d{4,}", q))
     scored = []
     for d, blob in zip(_os_cache["docs"], _os_cache["blobs"]):
-        s = (100 if str(d.get("os_number")) in nums else 0) + sum(1 for t in toks if t in blob)
+        s = (100 if str(d.get("os_number")) in nums else 0) + sum(
+            1 for t in toks if t in blob or (len(t) >= 5 and t[:-2] in blob))
         if s > 0:
             scored.append((s, d.get("updated_at") or "", d))
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -191,15 +196,38 @@ def _geo_context(q: str):
     return "\n".join(lines)
 
 
-async def _routes_context(db):
-    routes = await db.routes.find({}, {"_id": 0}).sort("created_at", -1).limit(30).to_list(30)
-    lines = []
+async def _routes_context(db, q: str = ""):
+    """Roteiros que batem com a pergunta (nome/técnico/data/OS/cliente, mesmo parcial) com detalhe + 15 recentes."""
+    if time.time() - _routes_cache["ts"] > 120:
+        _routes_cache.update(ts=time.time(), docs=await db.routes.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000))
+    routes = _routes_cache["docs"]
+    toks = _tokens(q)
+    nums = set(re.findall(r"\d{4,}", q))
+
+    def orders_of(r):
+        return [o for o in (r.get("orders") if isinstance(r.get("orders"), list) else []) if isinstance(o, dict)]
+
+    def head(r):
+        return (f"{r.get('name')}; id {r.get('id')}; técnico {r.get('technician') or '-'}; data {r.get('date')}; "
+                f"status {r.get('status')}; {r.get('total_distance') or ''} {r.get('total_duration') or ''}")
+
+    scored = []
     for r in routes:
-        orders = r.get("orders") if isinstance(r.get("orders"), list) else []
-        os_list = ", ".join(str(o.get("os_number")) for o in orders if isinstance(o, dict))
-        lines.append(f"- {r.get('name')}; técnico {r.get('technician') or '-'}; data {r.get('date')}; status {r.get('status')}; "
-                     f"{r.get('total_distance') or ''} {r.get('total_duration') or ''}; OSs: {os_list or '-'}")
-    return "\n".join(lines) or "(nenhum roteiro)"
+        blob = _norm(" ".join(str(v) for v in (r.get("name"), r.get("technician"), r.get("date"), r.get("status")))
+                     + " " + " ".join(f"{o.get('os_number')} {o.get('customer_name')} {o.get('neighborhood')}" for o in orders_of(r)))
+        s = sum(1 for t in toks if t in blob) + sum(50 for n in nums if n in blob)
+        if s:
+            scored.append((s, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    lines = []
+    for _, r in scored[:8]:
+        lines.append("- " + head(r))
+        lines += [f"    {o.get('sequence')}. OS {o.get('os_number')}; {o.get('customer_name') or ''}; {o.get('address') or ''} "
+                  f"{o.get('number') or ''} {o.get('complement') or ''}, {o.get('neighborhood') or ''}, {o.get('city') or ''}; "
+                  f"status {o.get('status') or ''}" for o in orders_of(r)]
+    lines.append("Recentes:")
+    lines += ["- " + head(r) + "; OSs: " + ", ".join(str(o.get("os_number")) for o in orders_of(r)) for r in routes[:15]]
+    return "\n".join(lines)
 
 
 async def _search_manuals(mongo_db, q: str, limit: int = 8):
@@ -245,6 +273,7 @@ class ChatBody(BaseModel):
     conversation_id: Optional[str] = None
     attachment_name: Optional[str] = None
     attachment_text: Optional[str] = None
+    attachment_file_id: Optional[str] = None
 
 
 SYSTEM_FULL = (SYSTEM + "\nREGIONAIS DE SABARÁ (use para localizar OSs e montar roteiros):\n" + mi_agent.regions_text()
@@ -291,7 +320,24 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             text = await asyncio.to_thread(mi_agent.extract_upload, data, file.filename or "")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"name": file.filename, "text": text[:60000], "chars": len(text)}
+        # DOCX: guarda o original para a Mi editar sem perder layout.
+        fid = await mi_agent.store_upload(data) if (file.filename or "").lower().endswith(".docx") else None
+        return {"name": file.filename, "text": text[:60000], "chars": len(text), "file_id": fid}
+
+    @api_router.get("/mi/files/{name}")
+    async def mi_file(name: str):
+        """Download público (token aleatório) dos arquivos gerados pela Mi."""
+        m = re.fullmatch(r"([0-9a-f]{32})\.(pdf|docx)", name)
+        if not m:
+            raise HTTPException(status_code=404, detail="Arquivo inexistente")
+        try:
+            data, ctype = await asyncio.to_thread(get_object, f"{mi_agent.FILE_PREFIX}/{name}")
+        except Exception:
+            raise HTTPException(status_code=404, detail="Arquivo inexistente")
+        from fastapi.responses import Response
+        disp = "inline" if m.group(2) == "pdf" else "attachment"
+        return Response(content=data, media_type=ctype,
+                        headers={"Content-Disposition": f'{disp}; filename="documento_mi.{m.group(2)}"'})
 
     @api_router.get("/mi/memories")
     async def list_memories(payload: dict = Depends(require_admin)):
@@ -315,7 +361,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             await _set_action_status(aid, "canceled", "Cancelada")
             return {"status": "canceled", "result": "Cancelada"}
         try:
-            result = await mi_agent.execute(db, act["action"])
+            result = await mi_agent.execute(db, act["action"], payload)
             status = "done"
         except Exception as e:
             result, status = f"Erro: {e}", "error"
@@ -342,11 +388,14 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
 
         history = await msgs.find({"conversation_id": cid}, {"_id": 0}).sort("created_at", -1).to_list(10)
         await msgs.insert_one({"id": str(uuid.uuid4()), "conversation_id": cid, "role": "user", "content": text,
-                               "attachment_name": body.attachment_name, "attachment_text": body.attachment_text, "created_at": now})
+                               "attachment_name": body.attachment_name, "attachment_text": body.attachment_text,
+                               "attachment_file_id": body.attachment_file_id, "created_at": now})
         attach = body.attachment_text and (body.attachment_name, body.attachment_text)
+        file_id = body.attachment_file_id
         if not attach:
             prev = await msgs.find_one({"conversation_id": cid, "attachment_text": {"$nin": [None, ""]}}, {"_id": 0}, sort=[("created_at", -1)])
             attach = prev and (prev["attachment_name"], prev["attachment_text"])
+            file_id = prev and prev.get("attachment_file_id")
         memories = await mi_agent.get_memories(mongo_db, email)
 
         await _load_os(db)
@@ -355,7 +404,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         man_hits = await _search_manuals(mongo_db, f"{text} {hist_q[-150:]}", limit=10)
         geo_txt = _geo_context(text) or _geo_context(f"{text} {hist_q}")
         region_txt = mi_agent.region_context(text, _os_cache["docs"])
-        routes_txt = await _routes_context(db)
+        routes_txt = await _routes_context(db, f"{text} {hist_q[-200:]}")
         titles = [d["title"] async for d in mongo_db["mi_manual_index"].find({}, {"title": 1})]
 
         os_txt = "\n".join("; ".join(f"{k}={v}" for k, v in d.items() if v) for d in os_hits) or "(nenhuma OS relacionada)"
@@ -369,18 +418,23 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             f"## OSs relacionadas à pergunta\n{os_txt}\n\n"
             + (f"## Localização (OSs próximas, calculado pelas coordenadas)\n{geo_txt}\n\n" if geo_txt else "")
             + (f"## OSs por regional de Sabará\n{region_txt}\n\n" if region_txt else "")
-            + f"## Roteiros recentes (30 últimos)\n{routes_txt}\n\n"
+            + f"## Roteiros (os que batem com a pergunta em detalhe + recentes)\n{routes_txt}\n\n"
             f"## Manuais disponíveis\n" + "\n".join(f"- {t}" for t in titles) + "\n\n"
             f"## Trechos de manuais relevantes\n{man_txt}\n\n"
             f"## Conversa anterior\n{hist_txt or '(início)'}\n\n"
             f"## Pergunta\n{text}"
         )
         try:
+            # Universal Key sem saldo: pula direto p/ Ollama por 10 min (evita esperar o erro a cada pergunta).
+            if time.time() < _llm_state["openai_off_until"]:
+                raise RuntimeError("openai em pausa")
             from emergentintegrations.llm.chat import LlmChat, UserMessage
             chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"mi-{cid}", system_message=SYSTEM_FULL).with_model("openai", MODEL)
             answer = (await chat.send_message(UserMessage(text=prompt)) or "").strip()
         except Exception as e:
-            logger.warning(f"[Mi] Universal Key falhou, usando Ollama: {e!r}")
+            if "pausa" not in str(e):
+                _llm_state["openai_off_until"] = time.time() + 600
+                logger.warning(f"[Mi] Universal Key falhou, usando Ollama: {e!r}")
             try:
                 answer = await _ollama_chat(prompt)
             except Exception as e2:
@@ -401,6 +455,15 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
                 except Exception as e:
                     logger.error(f"[Mi] PDF falhou: {e!r}")
                     actions.append({"id": aid, "type": "pdf", "summary": "Falha ao gerar PDF", "status": "error"})
+            elif a["type"] == "edit_docx":
+                try:
+                    if not file_id:
+                        raise ValueError("nenhum DOCX anexado nesta conversa")
+                    url, n = await mi_agent.edit_docx(file_id, a.get("replacements") or [], bool(a.get("pdf")))
+                    actions.append({"id": aid, "type": "pdf", "summary": f"Documento editado ({n} trecho(s) alterado(s))", "status": "done", "url": url})
+                except Exception as e:
+                    logger.error(f"[Mi] edit_docx falhou: {e!r}")
+                    actions.append({"id": aid, "type": "pdf", "summary": f"Falha ao editar documento: {e}", "status": "error"})
             elif a["type"] in mi_agent.CONFIRM_TYPES:
                 await mongo_db["mi_actions"].insert_one({"id": aid, "user_email": email, "conversation_id": cid, "action": a,
                                                          "status": "pending", "created_at": now})

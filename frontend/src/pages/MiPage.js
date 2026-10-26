@@ -48,7 +48,7 @@ const ActionCard = ({ a, onDecide }) => (
       <div className="flex-1">
         <p className="text-gray-800">{a.summary}</p>
         <p className="text-gray-500 mt-0.5">{a.result || ACTION_STATUS[a.status]}</p>
-        {a.url && <a href={`${process.env.REACT_APP_BACKEND_URL}${a.url}`} target="_blank" rel="noreferrer" className="font-medium underline" style={{ color: NAVY }} data-testid="mi-pdf-link">Abrir PDF</a>}
+        {a.url && <a href={`${process.env.REACT_APP_BACKEND_URL}${a.url}`} target="_blank" rel="noreferrer" className="font-medium underline" style={{ color: NAVY }} data-testid="mi-pdf-link">Abrir arquivo</a>}
       </div>
     </div>
     {a.status === 'pending' && (
@@ -137,7 +137,7 @@ export default function MiPage() {
     fd.append('file', file);
     try {
       const res = await axios.post(`${API}/mi/upload`, fd, auth());
-      setAttachment({ name: res.data.name, text: res.data.text });
+      setAttachment({ name: res.data.name, text: res.data.text, fileId: res.data.file_id });
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Erro ao ler arquivo');
     } finally {
@@ -186,7 +186,7 @@ export default function MiPage() {
     setMessages(prev => [...prev, { id: `tmp-${Date.now()}`, role: 'user', content: msg, attachment_name: att?.name }]);
     setSending(true);
     try {
-      const res = await axios.post(`${API}/mi/chat`, { message: msg, conversation_id: activeId, attachment_name: att?.name, attachment_text: att?.text }, auth());
+      const res = await axios.post(`${API}/mi/chat`, { message: msg, conversation_id: activeId, attachment_name: att?.name, attachment_text: att?.text, attachment_file_id: att?.fileId }, auth());
       setActiveId(res.data.conversation_id);
       setMessages(prev => [...prev, res.data.message]);
       loadConvs();

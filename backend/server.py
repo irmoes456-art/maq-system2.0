@@ -755,6 +755,7 @@ class ServiceOrderUpdate(BaseModel):
     landline: Optional[str] = None
     email: Optional[str] = None
     visit_fee: Optional[float] = None
+    visit_fee_paid: Optional[bool] = None
     reference_point: Optional[str] = None
     service_type: Optional[str] = None
     product: Optional[str] = None
@@ -1049,9 +1050,8 @@ async def create_external_os(data: ExternalOS, background_tasks: BackgroundTasks
     elif not raw_svc:
         inferred_svc = "Orçamento"
 
-    final_obs = observations_in
-    if extra_obs:
-        final_obs = f"{extra_obs} - {observations_in}" if observations_in else extra_obs
+    # OSs do site: texto do formulário vai para site_info (não para Observações).
+    final_obs = extra_obs or ""
     
     order_doc = {
         "id": os_id,
@@ -1075,6 +1075,7 @@ async def create_external_os(data: ExternalOS, background_tasks: BackgroundTasks
         "batch": "",
         "reported_defect": data.reported_defect or "",
         "observations": final_obs,
+        "site_info": observations_in,
         "service_type": inferred_svc,
         "reference_point": data.reference_point or "",
         "status": "Aguardando Analise A.T",
@@ -1492,7 +1493,7 @@ async def get_service_orders(
         "address": 1, "number": 1, "complement": 1, "neighborhood": 1, "city": 1, "state": 1,
         "phone1": 1, "phone2": 1, "landline": 1, "email": 1, "technician": 1, "sort_date": 1,
         "lat": 1, "lng": 1, "reported_defect": 1, "serial_number": 1,
-        "batch": 1, "cep": 1, "reference_point": 1, "visit_fee": 1,
+        "batch": 1, "cep": 1, "reference_point": 1, "visit_fee": 1, "visit_fee_paid": 1,
         "scheduling_history": 1, "observations": 1, "priority": 1,
         # Needed for relevance-+-recency tiebreaker in search:
         "created_at": 1, "updated_at": 1,
@@ -2305,7 +2306,7 @@ async def get_service_order(os_number: str, include_photos: bool = False, payloa
             "serial_number": 1, "batch": 1, "reported_defect": 1,
             "technical_diagnosis": 1, "installation_correct": 1, "required_parts": 1,
             "voltage_f1f2": 1, "voltage_f1_terra": 1, "voltage_f2_terra": 1,
-            "observations": 1, "priority": 1, "visit_fee": 1,
+            "observations": 1, "priority": 1, "visit_fee": 1, "visit_fee_paid": 1,
             "lat": 1, "lng": 1, "sort_date": 1,
             "status_orcamento": 1, "conclusao_orcamento": 1,
             "signature_customer": 1, "signature_technician": 1,
@@ -3422,6 +3423,19 @@ setup_users_routes(api_router, mongo_db, verify_token)
 setup_label_templates_routes(api_router, mongo_db, verify_token)
 from mi_module import setup_mi_routes, index_manuals as mi_index_manuals
 setup_mi_routes(api_router, db, mongo_db, require_admin)
+
+
+async def _mi_create_os(fields: dict, payload: dict):
+    """Usado pela Mi (ação create_os confirmada). Preenche defaults dos campos obrigatórios."""
+    if not fields.get("os_number"):
+        fields["os_number"] = (await get_next_ose_number(payload))["next_ose_number"]
+    base = {k: "" for k in ("cep", "address", "number", "neighborhood", "city", "state", "phone1", "product", "brand")}
+    base.update(city="Belo Horizonte", state="MG", registration_date=datetime.now().strftime("%d/%m/%Y"))
+    data = {**base, **{k: v for k, v in fields.items() if v is not None}}
+    return await create_service_order(ServiceOrderCreate(**data), payload)
+
+import mi_agent as _mi_agent  # noqa: E402
+_mi_agent.CREATE_OS = _mi_create_os
 
 
 @app.on_event("startup")

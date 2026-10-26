@@ -81,15 +81,20 @@ ACTIONS_PROMPT = (
     '- {"type":"update_route","route":"nome ou id","fields":{"date":"AAAA-MM-DD","technician":"...","status":"Pendente|Em andamento|Concluído|Cancelado","name":"..."},'
     '"add_os":["..."],"remove_os":["..."]}\n'
     '- {"type":"update_os","os_number":"...","fields":{"status":"...","technician":"...","observations":"...","attendance_date":"AAAA-MM-DD", ...}}\n'
-    '- {"type":"generate_pdf","title":"...","content":"texto completo do documento"} → gera PDF e devolve link '
-    "(use também para entregar um documento anexado já editado).\n"
-    "Ações create_route/update_route/update_os ficam aguardando o usuário clicar em Confirmar; diga isso em uma frase. "
+    '- {"type":"create_os","fields":{"customer_name":"...","phone1":"...","cep":"...","address":"...","number":"...","complement":"...",'
+    '"neighborhood":"...","city":"...","product":"...","brand":"...","model":"...","reported_defect":"...","service_type":"..."}} '
+    "(número da OS é gerado automaticamente se não informado)\n"
+    '- {"type":"edit_docx","replacements":[{"find":"texto exato do documento","replace":"novo texto"}],"pdf":false} → edita o '
+    "DOCX anexado mantendo layout e todo o resto do conteúdo igual (só troca os trechos indicados; use pdf=true para entregar em PDF).\n"
+    '- {"type":"generate_pdf","title":"...","content":"texto completo do documento"} → gera PDF novo do zero e devolve link.\n'
+    "Ações create_route/update_route/update_os/create_os ficam aguardando o usuário clicar em Confirmar; diga isso em uma frase. "
     "Nunca escreva o JSON fora do bloco <acoes>."
 )
 OS_EDITABLE = {"status", "technician", "observations", "attendance_date", "priority", "reported_defect", "technical_diagnosis",
                "required_parts", "customer_name", "phone1", "address", "number", "neighborhood", "city", "model",
                "serial_number", "product", "service_type"}
-CONFIRM_TYPES = {"create_route", "update_route", "update_os"}
+CONFIRM_TYPES = {"create_route", "update_route", "update_os", "create_os"}
+CREATE_OS = None  # injetado pelo server.py (cria OS reutilizando o endpoint)
 
 
 def parse_actions(answer: str):
@@ -117,6 +122,8 @@ def summarize(a: dict) -> str:
         return f"Alterar roteiro \"{a.get('route')}\": {'; '.join(extra)}"
     if t == "update_os":
         return f"Alterar OS {a.get('os_number')}: " + "; ".join(f"{k}={v}" for k, v in (a.get("fields") or {}).items())
+    if t == "create_os":
+        return "Criar OS: " + "; ".join(f"{k}={v}" for k, v in (a.get("fields") or {}).items() if v)
     return t
 
 
@@ -131,10 +138,13 @@ async def _route_orders(db, os_numbers):
     return orders
 
 
-async def execute(db, a: dict):
+async def execute(db, a: dict, payload: dict = None):
     """Executa ação confirmada. Retorna texto de resultado."""
     from routes_module import create_route, update_route, RouteCreate, RouteUpdate
     t = a["type"]
+    if t == "create_os":
+        r = await CREATE_OS(dict(a.get("fields") or {}), payload or {})
+        return f"OS {r.get('os_number')} criada."
     if t == "create_route":
         nums = list(a.get("os_numbers") or [])[:9]
         r = await create_route(RouteCreate(name=a.get("name"), technician=a.get("technician") or "", date=a.get("date") or "",
@@ -193,6 +203,75 @@ async def generate_pdf(title: str, content: str) -> str:
 
 
 # --- Anexos ---
+FILE_PREFIX = "mastermaq-manuais/mi-files"
+
+
+def _replace_in_paragraph(p, find: str, repl: str) -> bool:
+    """Troca texto preservando a formatação do primeiro run do trecho."""
+    if find not in p.text:
+        return False
+    if any(find in r.text for r in p.runs):
+        for r in p.runs:
+            if find in r.text:
+                r.text = r.text.replace(find, repl)
+        return True
+    full = p.text.replace(find, repl)
+    for i, r in enumerate(p.runs):
+        r.text = full if i == 0 else ""
+    return True
+
+
+def _edit_docx(data: bytes, replacements: list) -> tuple:
+    import docx
+    doc = docx.Document(io.BytesIO(data))
+    paras = list(doc.paragraphs)
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                paras += cell.paragraphs
+    for sec in doc.sections:
+        paras += sec.header.paragraphs + sec.footer.paragraphs
+    done = 0
+    for rp in replacements:
+        f, r = str(rp.get("find") or ""), str(rp.get("replace") or "")
+        if f:
+            done += sum(_replace_in_paragraph(p, f, r) for p in paras)
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue(), done
+
+
+def _docx_to_pdf(data: bytes) -> bytes:
+    import os
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "doc.docx")
+        open(src, "wb").write(data)
+        subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", d, src], capture_output=True, timeout=180)
+        return open(os.path.join(d, "doc.pdf"), "rb").read()
+
+
+async def edit_docx(file_id: str, replacements: list, as_pdf: bool) -> tuple:
+    from manuais_module import get_object, put_object
+    src, _ = await asyncio.to_thread(get_object, f"{FILE_PREFIX}/{file_id}.docx")
+    out, done = await asyncio.to_thread(_edit_docx, src, replacements)
+    ext, ctype = "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if as_pdf:
+        out, ext, ctype = await asyncio.to_thread(_docx_to_pdf, out), "pdf", "application/pdf"
+    token = uuid.uuid4().hex
+    await asyncio.to_thread(put_object, f"{FILE_PREFIX}/{token}.{ext}", out, ctype)
+    return f"/api/mi/files/{token}.{ext}", done
+
+
+async def store_upload(data: bytes) -> str:
+    from manuais_module import put_object
+    fid = uuid.uuid4().hex
+    await asyncio.to_thread(put_object, f"{FILE_PREFIX}/{fid}.docx", data,
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    return fid
+
+
 def extract_upload(data: bytes, filename: str) -> str:
     import subprocess
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""

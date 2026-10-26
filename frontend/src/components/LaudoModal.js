@@ -790,7 +790,7 @@ const LaudoModal = ({ open, onClose, order, getAuthHeader, onUpdated }) => {
               </tr>
               <tr>
                 <td className="px-2 py-2 border border-gray-300 min-h-[30px]" style={{whiteSpace:'pre-wrap'}}>
-                  <span className="font-bold">Diagnóstico técnico:</span> {finalData.technical_notes || ''}
+                  <span className="font-bold">Observações técnicas:</span> {finalData.technical_notes || ''}
                 </td>
               </tr>
               <tr>
@@ -904,7 +904,7 @@ const LaudoModal = ({ open, onClose, order, getAuthHeader, onUpdated }) => {
             </tr>
             <tr>
               <td className="px-2 py-2 border border-gray-300 min-h-[30px]" style={{whiteSpace:'pre-wrap'}}>
-                <span className="font-bold">Diagnóstico técnico:</span>  {finalData.technical_notes || ''}
+                <span className="font-bold">Observações técnicas:</span>  {finalData.technical_notes || ''}
               </td>
             </tr>
             <tr>

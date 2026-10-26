@@ -1134,11 +1134,26 @@ const fetchOrders = useCallback(async () => {
                                 Prioridade
                               </Badge>
                             )}
-                            {/Taxa de visita PAGA/i.test(order.observations || '') && (
-                              <Badge className="text-xs bg-green-600 text-white border-green-600" data-testid={`taxa-paga-badge-${order.os_number}`}>
-                                Taxa paga
-                              </Badge>
+                            {!String(order.source || '').startsWith('telecontrol') && (
+                              <select
+                                value={order.visit_fee_paid ? 'paid' : 'unpaid'}
+                                onClick={e => e.stopPropagation()}
+                                onChange={async (e) => {
+                                  e.stopPropagation();
+                                  const paid = e.target.value === 'paid';
+                                  try {
+                                    await axios.put(`${API}/service-orders/${order.os_number}`, { visit_fee_paid: paid }, getAuthHeader());
+                                    setOrders(prev => prev.map(o => o.os_number === order.os_number ? { ...o, visit_fee_paid: paid } : o));
+                                  } catch { toast.error('Erro ao salvar taxa'); }
+                                }}
+                                className={`text-xs rounded-md px-1.5 py-0.5 border font-medium cursor-pointer ${order.visit_fee_paid ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300'}`}
+                                data-testid={`taxa-select-${order.os_number}`}
+                              >
+                                <option value="paid">Taxa Paga</option>
+                                <option value="unpaid">Taxa não paga</option>
+                              </select>
                             )}
+                            {(order.source === 'telecontrol_hisense' || order.source === 'telecontrol') && (
                               <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-blue-300 text-blue-600 font-medium" data-testid={`badge-hisense-${order.os_number}`}>
                                 Telecontrol Hisense
                               </Badge>

@@ -61,7 +61,7 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
         data=data, timeout=300
     )
     resp.raise_for_status()
-    return resp.json()
+    return {"path": path, "size": len(data)}
 
 
 def _legacy_get_object(path: str):
