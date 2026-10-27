@@ -91,19 +91,31 @@ async def send_route_schedule(db, route: dict):
         name = (o.get("customer_name") or os_doc.get("customer_name") or "cliente").split()[0].title()
         product = os_doc.get("product") or os_doc.get("model") or "seu equipamento"
         params = [name, str(o.get("os_number")), product, when]
+        text = SCHEDULE_TEXT
+        for i, p in enumerate(params, 1):
+            text = text.replace("{{" + str(i) + "}}", p)
+        # Direct Send (utility, sem template pré-aprovado); se a conta não for elegível, cai no template.
+        direct = {
+            "messaging_product": "whatsapp", "recipient_type": "individual", "to": phone, "type": "text",
+            "text": {"body": text}, "category": "utility",
+            "direct_send_config": {"template_name": SCHEDULE_TEMPLATE + "_ds"},
+        }
         payload = {
             "messaging_product": "whatsapp", "to": phone, "type": "template",
             "template": {"name": SCHEDULE_TEMPLATE, "language": {"code": "pt_BR"},
                          "components": [{"type": "body", "parameters": [{"type": "text", "text": p} for p in params]}]},
         }
         try:
-            resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {WA_PERMANENT_TOKEN}"})
+            headers = {"Authorization": f"Bearer {WA_PERMANENT_TOKEN}"}
+            resp = await client.post(url, json=direct, headers=headers)
+            if resp.status_code >= 400 and "Direct Send" in resp.text:
+                resp = await client.post(url, json=payload, headers=headers)
             ok = resp.status_code < 400
             if not ok:
                 logger.error(f"[WA] agendamento OS {o.get('os_number')} falhou: {resp.text[:300]}")
             await db.whatsapp_messages.insert_one({
-                "direction": "outbound", "to": phone, "type": "template",
-                "body": f"{SCHEDULE_TEMPLATE}: {' | '.join(params)}",
+                "direction": "outbound", "to": phone, "type": "text",
+                "body": text,
                 "wa_message_id": (resp.json().get("messages") or [{}])[0].get("id") if ok else None,
                 "status": "sent" if ok else "failed",
                 "sent_at": datetime.now(timezone.utc).isoformat(),

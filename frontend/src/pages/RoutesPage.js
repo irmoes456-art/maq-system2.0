@@ -270,6 +270,9 @@ const normalizeAddressForMaps = (order, includeBairro = false) => {
 const BASE_ADDR = 'Rua Descalvado, 636A, Renascença, Belo Horizonte, MG';
 const BASE_LAT = -19.8881334;
 const BASE_LNG = -43.9420748;
+// Coordenada válida = número finito (0 é válido; null/''/NaN não).
+const hasCoords = (o) => o != null && o.lat != null && o.lng != null && o.lat !== '' && o.lng !== ''
+  && Number.isFinite(Number(o.lat)) && Number.isFinite(Number(o.lng));
 const MAX_ROUTE_OS = 9;
 
 // Haversine distance in meters
@@ -499,7 +502,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
           let path = navPath;
           if (!path && live.active_os && orders && orders.length) {
             const tgt = orders.find(o => String(o.os_number) === String(live.active_os));
-            if (tgt && tgt.lat && tgt.lng) {
+            if (hasCoords(tgt)) {
               path = [{ lat: live.lat, lng: live.lng }, { lat: tgt.lat, lng: tgt.lng }];
             }
           }
@@ -594,7 +597,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   };
 
   const buildWaypoint = (order) => {
-    if (order.lat && order.lng) return { lat: order.lat, lng: order.lng };
+    if (hasCoords(order)) return { lat: order.lat, lng: order.lng };
     return { address: normalizeAddressForMaps(order) };
   };
 
@@ -603,14 +606,14 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   const buildNavUrl = useCallback((sorted) => {
     const baseCoord = `${BASE_LAT},${BASE_LNG}`;
     const points = [baseCoord, ...sorted.map(o => {
-      if (o.lat && o.lng) return `${o.lat},${o.lng}`;
+      if (hasCoords(o)) return `${o.lat},${o.lng}`;
       return normalizeAddressForMaps(o);
     }), baseCoord];
     return `https://www.google.com/maps/dir/${points.map(p => encodeURIComponent(p)).join('/')}`;
   }, []);
 
   const buildStopNavUrl = (order) => {
-    if (order.lat && order.lng) return `https://www.google.com/maps/search/?api=1&query=${order.lat},${order.lng}`;
+    if (hasCoords(order)) return `https://www.google.com/maps/search/?api=1&query=${order.lat},${order.lng}`;
     const full = normalizeAddressForMaps(order);
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(full)}`;
   };
@@ -898,7 +901,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     const sorted = routeData?.sorted || [];
     for (let i = 0; i < sorted.length; i++) {
       const o = sorted[i];
-      if (!o.lat || !o.lng) continue;
+      if (!hasCoords(o)) continue;
       const dist = haversine(lat, lng, parseFloat(o.lat), parseFloat(o.lng));
       if (dist < 50) {
         const msg = `Você chegou na parada ${i + 1}. OS ${o.os_number}. ${o.customer_name || ''}`;
@@ -1127,7 +1130,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
         // Geofencing: auto-detect arrival at stops (within 100m)
         if (routeData?.sorted) {
           routeData.sorted.forEach((os) => {
-            if (os.lat && os.lng) {
+            if (hasCoords(os)) {
               const dist = haversine(newLat, newLng, os.lat, os.lng);
               if (dist < 100) {
                 setStopStatuses(prev => {
@@ -1424,7 +1427,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   }, [orders]);
 
   useEffect(() => {
-    if (!open || !orders || orders.length < 2) return;
+    // 1 OS também é rota válida (base → OS → base); antes ficava preso em "Calculando rota...".
+    if (!open || !orders || orders.length < 1) return;
     setLoading(true);
     setError(null);
     setRouteInfo(null);
@@ -1432,7 +1436,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
 
     const sorted = [...orders].sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
     // Set initial map center to first order with coords, or base
-    const firstWithCoords = sorted.find(o => o.lat && o.lng);
+    const firstWithCoords = sorted.find(o => hasCoords(o));
     if (firstWithCoords) {
       setMapCenter({ lat: firstWithCoords.lat, lng: firstWithCoords.lng });
     } else {
@@ -1495,6 +1499,11 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     <Dialog open={open} onOpenChange={(v) => { if (!v) cleanup(); onClose(v); }}>
       <DialogContent className="max-w-5xl h-[85vh] p-0 overflow-hidden" data-testid="route-map-dialog">
         {/* Header */}
+        {orders.some(o => !hasCoords(o)) && (
+          <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800" data-testid="map-missing-coords">
+            Sem localização (fora da rota): {orders.filter(o => !hasCoords(o)).map(o => `OS ${o.os_number}`).join(', ')} — corrija o endereço da OS.
+          </div>
+        )}
         <div className="px-4 py-3 border-b flex items-center justify-between bg-white z-10 relative">
           <DialogTitle className="text-sm font-semibold flex items-center gap-2">
             <MapIcon className="h-4 w-4" /> {routeName || 'Rota'}
@@ -2479,7 +2488,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
       }
       const next = unvisited.splice(bestIdx, 1)[0];
       route.push(next);
-      if (next.lat && next.lng) { curLat = next.lat; curLng = next.lng; }
+      if (hasCoords(next)) { curLat = next.lat; curLng = next.lng; }
     }
     return route.map((o, i) => ({ ...o, sequence: i + 1 }));
   };
@@ -2489,7 +2498,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
     let total = 0;
     let prevLat = baseLat, prevLng = baseLng;
     for (const o of ordersWithCoords) {
-      if (o.lat && o.lng) {
+      if (hasCoords(o)) {
         total += haversine(prevLat, prevLng, o.lat, o.lng);
         prevLat = o.lat; prevLng = o.lng;
       }
@@ -2541,7 +2550,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
       results.forEach(r => { if (r.cached) coordMap[r.os_number] = { lat: r.lat, lng: r.lng }; });
       const withCoords = routableOrders
         .map(o => ({ ...o, lat: coordMap[o.os_number]?.lat || o.lat, lng: coordMap[o.os_number]?.lng || o.lng }))
-        .filter(o => o.lat && o.lng);
+        .filter(o => hasCoords(o));
       if (withCoords.length < 2) {
         toast.error('Poucas OS com coordenadas. Otimize uma rota primeiro para geocodificar os endereços.');
         setLoadingProximity(false);
@@ -2784,7 +2793,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
       const durStr = mins >= 60 ? `${Math.floor(mins/60)}h ${mins%60}min` : `${mins}min`;
 
       // Base coords (Mastermaq office)
-      const baseLat = -19.9245, baseLng = -43.9352;
+      const baseLat = BASE_LAT, baseLng = BASE_LNG;
 
       // Option 1: Google-optimized
       const opt1 = { name: 'Rota Otimizada (Google)', orders: reordered, distance: distKm, duration: durStr };
@@ -3623,13 +3632,61 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
     finally { setSaving(false); }
   };
 
-  // Abre o roteiro inteiro no Google Maps (base → OSs na ordem → base; até 9 paradas).
+  // Abre o roteiro no Google Maps usando coordenadas quando disponíveis e endereço como alternativa.
+  // O Google Maps aceita até 9 waypoints em URLs universais; a base é origem e destino.
   const openGoogleMaps = () => {
-    const stops = [...orders].sort((a, b) => (a.sequence || 0) - (b.sequence || 0)).filter(o => o.lat && o.lng);
-    if (!stops.length) { toast.error('Nenhuma OS com localização'); return; }
-    const base = `${BASE_LAT},${BASE_LNG}`;
-    const wp = stops.map(o => `${o.lat},${o.lng}`).join('|');
-    window.open(`https://www.google.com/maps/dir/?api=1&origin=${base}&destination=${base}&waypoints=${encodeURIComponent(wp)}&travelmode=driving`, '_blank');
+    const sortedOrders = [...orders].sort(
+      (a, b) => Number(a.sequence || 0) - Number(b.sequence || 0)
+    );
+
+    const stops = sortedOrders.map((o) => {
+      const lat = o.lat ?? o.latitude ?? o.latitud;
+      const lng = o.lng ?? o.longitude ?? o.longitud;
+      const hasCoordinates = lat !== null && lat !== undefined && lat !== '' &&
+        lng !== null && lng !== undefined && lng !== '' &&
+        Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+
+      // Se não houver coordenadas, monta o endereço completo da OS.
+      const address = [
+        o.address || o.endereco,
+        o.number || o.numero,
+        o.neighborhood || o.bairro,
+        o.city || o.cidade,
+        o.state || o.estado,
+      ].filter((part) => part !== null && part !== undefined && String(part).trim())
+        .join(', ');
+
+      if (hasCoordinates) return `${Number(lat)},${Number(lng)}`;
+      return address || null;
+    }).filter(Boolean);
+
+    if (!stops.length) {
+      toast.error('As OS não têm coordenadas nem endereço completo. Verifique os dados do roteiro.');
+      return;
+    }
+
+    // O Maps limita a quantidade de paradas intermediárias em URLs. Mantém as primeiras 9.
+    const waypoints = stops.slice(0, 9);
+
+    const baseLat = Number(BASE_LAT);
+    const baseLng = Number(BASE_LNG);
+    const hasBase = Number.isFinite(baseLat) && Number.isFinite(baseLng);
+    const base = hasBase ? `${baseLat},${baseLng}` : null;
+
+    const params = new URLSearchParams({
+      api: '1',
+      origin: base || waypoints[0],
+      destination: base || waypoints[waypoints.length - 1],
+      travelmode: 'driving',
+    });
+
+    // Se houver base, todas as OS são paradas intermediárias. Sem base, usa a primeira e última OS.
+    const intermediate = base ? waypoints : waypoints.slice(1, -1);
+    if (intermediate.length) params.set('waypoints', intermediate.join('|'));
+
+    const url = `https://www.google.com/maps/dir/?${params.toString()}`;
+    const opened = window.open(url, '_blank');
+    if (!opened) window.location.href = url; // fallback para navegadores móveis que bloqueiam nova aba
   };
 
   const handleReorder = async (newOrders) => {
@@ -3762,7 +3819,7 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
                       className="h-6 px-2 text-green-600 text-xs"
                       data-testid={`maps-btn-${o.os_number}`}
                       onClick={() => {
-                        if (o.lat && o.lng) {
+                        if (hasCoords(o)) {
                           window.open(`https://www.google.com/maps/dir/?api=1&destination=${o.lat},${o.lng}`, '_blank');
                         } else {
                           const addr = `${o.address || ''} ${o.number || ''}, ${o.neighborhood || ''} - ${o.city || ''}`;
@@ -3879,7 +3936,7 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
                         const phone = (o.phone1 || '').replace(/\D/g, '');
                         const phoneWa = phone.startsWith('55') ? phone : `55${phone}`;
                         // Build Maps link with lat/lng when available (more precise)
-                        const mapsLink = (o.lat && o.lng)
+                        const mapsLink = (hasCoords(o))
                           ? `https://www.google.com/maps?q=${o.lat},${o.lng}`
                           : '';
                         const mapsLine = mapsLink ? `\nLocalização: ${mapsLink}\n` : '';
@@ -4052,7 +4109,7 @@ const EditRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
   const cleanAddr = (order) => normalizeAddressForMaps(order, false);
 
   const buildWp = (order) => {
-    if (order.lat && order.lng) return { lat: order.lat, lng: order.lng };
+    if (hasCoords(order)) return { lat: order.lat, lng: order.lng };
     return { address: cleanAddr(order) };
   };
 
@@ -4076,7 +4133,7 @@ const EditRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
       const getWaypoint = (order) => {
         const cached = cachedMap[order.os_number];
         if (cached) return { lat: cached.lat, lng: cached.lng };
-        if (order.lat && order.lng) return { lat: order.lat, lng: order.lng };
+        if (hasCoords(order)) return { lat: order.lat, lng: order.lng };
         return { address: cleanAddr(order) };
       };
 

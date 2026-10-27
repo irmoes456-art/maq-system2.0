@@ -457,7 +457,12 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Causa: arquivos no object storage da Emergent, ligado à EMERGENT_LLM_KEY (gerenciada; diferente em produção) → 404 → 500.
 - Fix: storage agora é Supabase Storage (bucket privado `manuais`, mesmos paths). 56 manuais migrados (`migrate_manuais_to_supabase.py`, idempotente). `get_object` lê Supabase e cai no storage antigo se não achar. Slide preview reconverte se o cache PDF antigo não abrir. PDFs de "Enviar Cópia" novos também vão p/ Supabase.
 
-### 40. Sessão 23/10/2026
+### 42. Sessão 27/10/2026
+- WhatsApp: token novo (WA_APP_PERMANENT_TOKEN via Secrets). Token só acessa o número 31 3422-5293 (phone id 2302291929828411) → WA_PHONE_NUMBER_ID=2302291929828411. O id 133899754929882 (31 9020-8361) retorna "sem permissão". WABA não descobrível pelo token.
+- Agendamento ao criar roteiro usa Direct Send (texto + category utility + direct_send_config.template_name=agendamento_os_ds); se a conta não for elegível cai no template agendamento_os.
+- Roteiro: `hasCoords` (número finito; 0 válido) substitui checagens `lat && lng`; base única BASE_LAT/BASE_LNG (removida -19.9245,-43.9352 da sugestão); mapa avisa OSs sem localização.
+- Bug: roteiro com 1 OS ficava preso em "Calculando rota..." (`orders.length < 2`) → corrigido para `< 1`.
+
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
 - Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.
 - Status "Visita Realizada" (front OS_STATUSES/cores + backend OS_STATUS_COLORS). PUT /routes/{id} com status "Concluído" → todas as OSs do roteiro viram "Visita Realizada".

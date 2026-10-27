@@ -144,7 +144,8 @@ async def execute(db, a: dict, payload: dict = None):
     t = a["type"]
     if t == "create_os":
         r = await CREATE_OS(dict(a.get("fields") or {}), payload or {})
-        return f"OS {r.get('os_number')} criada."
+        num = r.get("os_number") if isinstance(r, dict) else getattr(r, "os_number", None)
+        return f"OS {num} criada."
     if t == "create_route":
         nums = list(a.get("os_numbers") or [])[:9]
         r = await create_route(RouteCreate(name=a.get("name"), technician=a.get("technician") or "", date=a.get("date") or "",
