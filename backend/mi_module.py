@@ -406,6 +406,12 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         region_txt = mi_agent.region_context(text, _os_cache["docs"])
         routes_txt = await _routes_context(db, f"{text} {hist_q[-200:]}")
         titles = [d["title"] async for d in mongo_db["mi_manual_index"].find({}, {"title": 1})]
+        wa_txt = ""
+        if re.search(r"whats|zap|wpp|mensag", text, re.I):
+            wa = (await db.whatsapp_messages.find({"direction": "inbound"}, {"_id": 0}).sort("received_at", -1).to_list(20)
+                  + await db.whatsapp_messages.find({"direction": "outbound"}, {"_id": 0}).sort("sent_at", -1).to_list(20))
+            wa_txt = "\n".join(f"{'←' if m.get('direction') == 'inbound' else '→'} {m.get('from') or m.get('to')} "
+                               f"{m.get('contact_name') or ''} [{m.get('status') or ''}] {(m.get('body') or '')[:200]}" for m in wa)
 
         os_txt = "\n".join("; ".join(f"{k}={v}" for k, v in d.items() if v) for d in os_hits) or "(nenhuma OS relacionada)"
         man_txt = "\n\n".join(f"[{h['title']} — pág. {h['page']}]\n{h['text']}" for h in man_hits) or "(nenhum trecho encontrado)"
@@ -418,6 +424,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             f"## OSs relacionadas à pergunta\n{os_txt}\n\n"
             + (f"## Localização (OSs próximas, calculado pelas coordenadas)\n{geo_txt}\n\n" if geo_txt else "")
             + (f"## OSs por regional de Sabará\n{region_txt}\n\n" if region_txt else "")
+            + (f"## WhatsApp — últimas mensagens (← recebida, → enviada)\n{wa_txt or '(nenhuma)'}\n\n" if wa_txt or re.search(r"whats|zap|wpp|mensag", text, re.I) else "")
             + f"## Roteiros (os que batem com a pergunta em detalhe + recentes)\n{routes_txt}\n\n"
             f"## Manuais disponíveis\n" + "\n".join(f"- {t}" for t in titles) + "\n\n"
             f"## Trechos de manuais relevantes\n{man_txt}\n\n"

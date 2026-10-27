@@ -88,7 +88,7 @@ export const buildCopyHtml = (order, sigData = null) => {
       </div>
       <div style="border-bottom:1px solid #000;padding:4px 6px;"><strong>DEFEITO: </strong>${U(order.reported_defect)}</div>
       <div style="padding:4px 6px;flex:1;display:flex;flex-direction:column;min-height:0;">
-        <div style="margin-bottom:4px;"><strong style="font-size:11px;">OBSERVA&Ccedil;&Otilde;ES T&Eacute;CNICAS:</strong></div>
+        <div style="margin-bottom:4px;"><strong style="font-size:11px;">OBSERVA&Ccedil;&Otilde;ES T&Eacute;CNICAS:</strong>${order.technical_diagnosis ? ' ' + U(order.technical_diagnosis) : ''}</div>
         <div style="border-top:1px solid #000;margin-top:20px;"></div>
         <div style="border-top:1px solid #000;margin-top:20px;"></div>
         <div style="border-top:1px solid #000;margin-top:20px;"></div>

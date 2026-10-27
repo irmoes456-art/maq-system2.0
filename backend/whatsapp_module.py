@@ -73,6 +73,30 @@ def _schedule_when(route_date: str) -> str:
     return route_date or "a data combinada"
 
 
+async def send_text(db, phone_raw: str, text: str) -> str:
+    """Envia texto livre (usado pela Mi). Fora da janela de 24h a Meta recusa — devolve o erro."""
+    if not (WA_PHONE_NUMBER_ID and WA_PERMANENT_TOKEN):
+        raise ValueError("WhatsApp não configurado (WA_PHONE_NUMBER_ID/token)")
+    digits = "".join(c for c in (phone_raw or "") if c.isdigit())
+    if len(digits) < 10:
+        raise ValueError("Telefone inválido")
+    phone = digits if digits.startswith("55") and len(digits) >= 12 else f"55{digits}"
+    client = await _get_shared_client()
+    resp = await client.post(f"{GRAPH_API_URL}/{GRAPH_API_VERSION}/{WA_PHONE_NUMBER_ID}/messages",
+                             json={"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": text}},
+                             headers={"Authorization": f"Bearer {WA_PERMANENT_TOKEN}"})
+    ok = resp.status_code < 400
+    await db.whatsapp_messages.insert_one({
+        "direction": "outbound", "to": phone, "type": "text", "body": text,
+        "wa_message_id": (resp.json().get("messages") or [{}])[0].get("id") if ok else None,
+        "status": "sent" if ok else "failed", "sent_at": datetime.now(timezone.utc).isoformat(),
+    })
+    if not ok:
+        err = (resp.json().get("error") or {}) if resp.headers.get("content-type", "").startswith("application/json") else {}
+        raise ValueError(f"Meta recusou: {err.get('message') or resp.text[:200]}")
+    return phone
+
+
 async def send_route_schedule(db, route: dict):
     """Envia o template agendamento_os para o cliente de cada OS do roteiro recém-criado."""
     if not (WA_PHONE_NUMBER_ID and WA_PERMANENT_TOKEN):

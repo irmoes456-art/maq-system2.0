@@ -618,6 +618,10 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(full)}`;
   };
 
+  const buildStopWazeUrl = (order) => (hasCoords(order)
+    ? `https://waze.com/ul?ll=${order.lat},${order.lng}&navigate=yes`
+    : `https://waze.com/ul?q=${encodeURIComponent(normalizeAddressForMaps(order))}&navigate=yes`);
+
   // Returns the minimum distance (meters) from a point to a polyline path (array of {lat,lng}).
   // Perpendicular point-to-polyline distance (meters). Antes só mediamos
   // distância aos VÉRTICES, o que inflava o off-route (ex: carro a 10m da
@@ -1289,6 +1293,24 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     polylineRef.current = [];
     if (infoWindowRef.current) { infoWindowRef.current.close(); infoWindowRef.current = null; }
 
+    if (!route) {
+      // Sem rota (API falhou): só os pinos numerados, sem linha reta enganosa.
+      const b = new window.google.maps.LatLngBounds();
+      b.extend({ lat: BASE_LAT, lng: BASE_LNG });
+      sorted.forEach((os, i) => {
+        if (!hasCoords(os)) return;
+        const pos = { lat: Number(os.lat), lng: Number(os.lng) };
+        b.extend(pos);
+        markersRef.current.push(new window.google.maps.Marker({
+          position: pos, map, title: `${i + 1}. OS ${os.os_number}`,
+          label: { text: String(i + 1), color: '#fff', fontSize: '12px', fontWeight: 'bold' },
+          icon: { path: window.google.maps.SymbolPath.CIRCLE, scale: 16, fillColor: '#4285F4', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2.5 },
+        }));
+      });
+      map.fitBounds(b, 60);
+      return;
+    }
+
     const path = window.google.maps.geometry.encoding.decodePath(route.polyline.encodedPolyline);
 
     // Shadow polyline (contorno da rota planejada)
@@ -1425,6 +1447,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
       .map(o => `${o.os_number}|${o.lat || ''}|${o.lng || ''}|${o.sequence || 0}`)
       .join('::');
   }, [orders]);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     // 1 OS também é rota válida (base → OS → base); antes ficava preso em "Calculando rota...".
@@ -1444,18 +1467,31 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     }
     const fetchRoute = async () => {
       try {
+        const auth = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+        // OSs sem coordenada: tenta localizar de novo (só aceita ponto exato do endereço).
+        const missing = sorted.filter(o => !hasCoords(o)).map(o => o.os_number);
+        if (missing.length) {
+          try {
+            const g = await axios.post(`${API}/routes/geocode`, { os_numbers: missing }, auth);
+            const found = Object.fromEntries((g.data.results || []).filter(r => r.cached).map(r => [r.os_number, r]));
+            sorted.forEach((o, i) => { if (found[o.os_number]) sorted[i] = { ...o, lat: found[o.os_number].lat, lng: found[o.os_number].lng }; });
+          } catch (_) { /* segue com o endereço */ }
+        }
         const BASE_WP = { lat: BASE_LAT, lng: BASE_LNG };
         const res = await axios.post(`${API}/routes/compute-route`, {
           origin: BASE_WP, destination: BASE_WP,
           intermediates: sorted.map(buildWaypoint),
           optimize_waypoint_order: false,
-        }, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+        }, auth);
         const route = res.data.routes?.[0];
         if (!route) throw new Error('Nenhuma rota encontrada');
         setRouteData({ route, sorted });
         if (mapRef.current) drawRouteOnMap(mapRef.current, route, sorted);
       } catch (err) {
         console.error('RouteMapDialog error:', err);
+        // Mantém o roteiro visível (lista + pinos) mesmo se a API de rotas falhar.
+        setRouteData({ route: null, sorted });
+        if (mapRef.current) drawRouteOnMap(mapRef.current, null, sorted);
         setError(err.response?.data?.detail || err.message || 'Erro desconhecido');
       } finally {
         setLoading(false);
@@ -1467,7 +1503,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   // every parent refresh (polling), which would tear down GPS tracking. We
   // only re-fetch when the actual OS list/coords/sequence changed.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, ordersSignature, token, drawRouteOnMap]);
+  }, [open, ordersSignature, token, drawRouteOnMap, retryKey]);
 
   const handleMapLoad = useCallback((map) => {
     mapRef.current = map;
@@ -1494,14 +1530,34 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     [arr[i], arr[i + dir]] = [arr[i + dir], arr[i]];
     onReorder(arr.map((o, idx) => ({ ...o, sequence: idx + 1 })));
   };
+  const navTarget = sorted.find(o => ['pending', 'arrived', 'in_transit', undefined].includes(stopStatuses[o.os_number]));
+  // Avança (pula a OS atual) ou volta para a OS anterior durante a navegação.
+  const shiftTarget = (dir) => {
+    const idx = navTarget ? sorted.indexOf(navTarget) : sorted.length;
+    setStopStatuses(prev => {
+      const next = { ...prev };
+      if (dir > 0 && navTarget) {
+        next[navTarget.os_number] = 'skipped';
+        const after = sorted.slice(idx + 1).find(s => !next[s.os_number] || next[s.os_number] === 'pending');
+        if (after) next[after.os_number] = 'in_transit';
+      } else if (dir < 0) {
+        const before = [...sorted.slice(0, idx)].reverse().find(s => ['skipped', 'completed'].includes(next[s.os_number]));
+        if (!before) return prev;
+        if (navTarget) next[navTarget.os_number] = 'pending';
+        next[before.os_number] = 'in_transit';
+      }
+      return next;
+    });
+  };
+  const BTN = 'text-xs px-3 py-2 sm:text-[10px] sm:px-2 sm:py-0.5 rounded';
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) cleanup(); onClose(v); }}>
       <DialogContent className="max-w-5xl h-[85vh] p-0 overflow-hidden" data-testid="route-map-dialog">
         {/* Header */}
-        {orders.some(o => !hasCoords(o)) && (
+        {sorted.some(o => !hasCoords(o)) && (
           <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800" data-testid="map-missing-coords">
-            Sem localização (fora da rota): {orders.filter(o => !hasCoords(o)).map(o => `OS ${o.os_number}`).join(', ')} — corrija o endereço da OS.
+            Endereço sem ponto exato (posição pode estar imprecisa): {sorted.filter(o => !hasCoords(o)).map(o => `OS ${o.os_number}`).join(', ')} — confira número, bairro e cidade da OS.
           </div>
         )}
         <div className="px-4 py-3 border-b flex items-center justify-between bg-white z-10 relative">
@@ -1538,11 +1594,18 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
               <span className="flex items-center gap-1"><Navigation className="h-3 w-3" />{routeInfo.distance}</span>
               <span className="flex items-center gap-1"><Clock className="h-3 w-3" />ETA {routeInfo.duration}</span>
             </div>
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => shiftTarget(-1)} className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded text-xs font-medium" data-testid="nav-prev-os">◀ Anterior</button>
+              <button onClick={() => shiftTarget(1)} disabled={!navTarget} className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40" data-testid="nav-next-os">Pular ▶</button>
+              {navTarget && (
+                <a href={buildStopWazeUrl(navTarget)} target="_blank" rel="noopener noreferrer" className="bg-white text-blue-700 px-3 py-1.5 rounded text-xs font-semibold" data-testid="nav-waze">Waze</a>
+              )}
             {!followMode && (
-              <button onClick={recenterOnTech} className="bg-white/20 hover:bg-white/30 px-2 py-0.5 rounded text-[10px] font-medium">
+              <button onClick={recenterOnTech} className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded text-xs font-medium">
                 Recentralizar
               </button>
             )}
+            </div>
           </div>
         )}
 
@@ -1569,6 +1632,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                     in_progress: 'bg-blue-50 border-blue-300',
                     in_transit: 'bg-indigo-50 border-indigo-300',
                     completed: 'bg-green-50 border-green-300',
+                    skipped: 'bg-gray-50 border-dashed border-gray-300 opacity-70',
                   };
                   const dotColors = {
                     pending: 'bg-blue-500',
@@ -1576,6 +1640,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                     in_progress: 'bg-blue-600 animate-pulse',
                     in_transit: 'bg-indigo-600 animate-pulse',
                     completed: 'bg-green-500',
+                    skipped: 'bg-gray-400',
                   };
                   const ps = photoStatusByOS[o.os_number];
                   const photosDone = !!ps?.all_done;
@@ -1601,8 +1666,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                   <div key={o.os_number} className={`flex items-start gap-2 px-2 py-2 rounded-lg border transition-colors group ${statusColors[status]}`} data-testid={`map-stop-${o.os_number}`}>
                     {onReorder && (
                       <div className="flex flex-col -my-1">
-                        <button disabled={i === 0} onClick={() => moveStop(i, -1)} className="text-[10px] text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-up-${o.os_number}`}>▲</button>
-                        <button disabled={i === sorted.length - 1} onClick={() => moveStop(i, 1)} className="text-[10px] text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-down-${o.os_number}`}>▼</button>
+                        <button disabled={i === 0} onClick={() => moveStop(i, -1)} className="text-sm sm:text-[10px] px-1 text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-up-${o.os_number}`}>▲</button>
+                        <button disabled={i === sorted.length - 1} onClick={() => moveStop(i, 1)} className="text-sm sm:text-[10px] px-1 text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-down-${o.os_number}`}>▼</button>
                       </div>
                     )}
                     <div className={`w-6 h-6 rounded-full text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5 ${dotColors[status]}`}>
@@ -1634,11 +1699,13 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                         {/* Ver OS button — always visible */}
                         <button
                           onClick={() => setQuickViewOS(o.os_number)}
-                          className="text-[10px] bg-white border border-gray-300 text-gray-700 px-2 py-0.5 rounded hover:bg-gray-50"
+                          className={`${BTN} bg-white border border-gray-300 text-gray-700 hover:bg-gray-50`}
                           data-testid={`map-view-os-${o.os_number}`}
                         >
                           Ver OS
                         </button>
+                        <a href={buildStopNavUrl(o)} target="_blank" rel="noopener noreferrer" className={`${BTN} bg-white border border-blue-300 text-blue-700`} data-testid={`map-gmaps-${o.os_number}`}>Maps</a>
+                        <a href={buildStopWazeUrl(o)} target="_blank" rel="noopener noreferrer" className={`${BTN} bg-sky-500 text-white`} data-testid={`map-waze-${o.os_number}`}>Waze</a>
                         {/* Compartilhar localização — SEMPRE visível: usuário pode
                            gerar o link antes mesmo de iniciar navegação e
                            enviar ao cliente por WhatsApp (Uber-like). */}
@@ -1656,11 +1723,11 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                                 toast.error(e?.response?.data?.detail || 'Não foi possível gerar o link');
                               }
                             }}
-                            className="text-[10px] bg-green-600 text-white px-2 py-0.5 rounded hover:bg-green-700"
+                            className={`${BTN} bg-green-600 text-white hover:bg-green-700`}
                             data-testid={`map-share-${o.os_number}`}
                             title="Compartilhar localização do técnico com o cliente desta OS"
                           >
-                            Compartilhar Localização
+                            Compartilhar Local
                           </button>
                         )}
                         {/* Action buttons for navigation — only technician + active route */}
@@ -1674,7 +1741,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                               setStopStatuses(prev => ({ ...prev, [o.os_number]: 'in_progress' }));
                               refreshPhotoStatus(o.os_number);
                             }}
-                            className={`text-[10px] px-2 py-0.5 rounded ${blockedByOther ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                            className={`${BTN} ${blockedByOther ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                             data-testid={`map-start-${o.os_number}`}
                             disabled={blockedByOther}
                           >
@@ -1691,7 +1758,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                               setStopStatuses(prev => ({ ...prev, [o.os_number]: 'in_progress' }));
                               refreshPhotoStatus(o.os_number);
                             }}
-                            className={`text-[10px] px-2 py-0.5 rounded ${blockedByOther ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white animate-pulse hover:bg-blue-700'}`}
+                            className={`${BTN} ${blockedByOther ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white animate-pulse hover:bg-blue-700'}`}
                             data-testid={`map-start-${o.os_number}`}
                             disabled={blockedByOther}
                           >
@@ -1718,7 +1785,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                                 return next;
                               });
                             }}
-                            className="text-[10px] bg-green-600 text-white px-2 py-0.5 rounded hover:bg-green-700"
+                            className={`${BTN} bg-green-600 text-white hover:bg-green-700`}
                             data-testid={`map-complete-${o.os_number}`}
                           >
                             Concluir Atendimento
@@ -1874,11 +1941,10 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
               </div>
             )}
             {error && (
-              <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
-                <div className="text-center max-w-sm px-4">
-                  <MapPin className="h-6 w-6 text-red-400 mx-auto mb-2" />
-                  <p className="text-red-600 text-sm">{error}</p>
-                </div>
+              <div className="absolute top-14 left-3 right-3 z-20 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-center gap-2 shadow" data-testid="map-route-error">
+                <MapPin className="h-4 w-4 text-red-500 shrink-0" />
+                <p className="text-red-700 text-xs flex-1">Não foi possível traçar a rota ({error}). O roteiro foi mantido.</p>
+                <button onClick={() => setRetryKey(k => k + 1)} className="text-xs font-medium bg-red-600 text-white px-3 py-1.5 rounded" data-testid="map-route-retry">Tentar de novo</button>
               </div>
             )}
             <GoogleMap
@@ -2734,6 +2800,8 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
       try {
         const cacheRes = await axios.post(`${API}/routes/geocode`, { os_numbers: osNumbers }, getAuthHeader());
         (cacheRes.data.results || []).forEach(r => { if (r.cached) cachedMap[r.os_number] = r; });
+        const bad = (cacheRes.data.results || []).filter(r => !r.cached);
+        if (bad.length) toast.warning(`Endereço impreciso/não encontrado: ${bad.map(r => `OS ${r.os_number}${r.precision === 'approximate' ? ' (só rua/bairro)' : ''}`).join(', ')} — confira o endereço.`, { duration: 8000 });
       } catch (e) { console.warn('Cache check failed:', e); }
 
       // Build waypoints for Routes API
@@ -2768,12 +2836,9 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
         const wp = waypointData[originalIdx];
         const leg = legs[seq];
         const endLoc = leg?.endLocation?.latLng;
-        const lat = endLoc?.latitude || wp.order.lat || null;
-        const lng = endLoc?.longitude || wp.order.lng || null;
-
-        if (!wp.hasCachedCoords && lat && lng) {
-          toCache.push({ os_number: wp.order.os_number, lat, lng });
-        }
+        // Sem coordenada validada: não grava o ponto que a API de rotas adivinhou pelo endereço.
+        const lat = wp.hasCachedCoords ? (endLoc?.latitude ?? wp.order.lat) : null;
+        const lng = wp.hasCachedCoords ? (endLoc?.longitude ?? wp.order.lng) : null;
 
         return { ...wp.order, lat, lng, sequence: seq + 1 };
       });
@@ -4168,11 +4233,9 @@ const EditRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
         const wp = remainingWps[originalIdx];
         const leg = legs[seq];
         const endLoc = leg?.endLocation?.latLng;
-        const lat = endLoc?.latitude || wp.order.lat || null;
-        const lng = endLoc?.longitude || wp.order.lng || null;
-        if (!wp.order.lat && !wp.order.lng && lat && lng) {
-          toCache.push({ os_number: wp.order.os_number, lat, lng });
-        }
+        const validated = !!cachedMap[wp.order.os_number] || hasCoords(wp.order);
+        const lat = validated ? (endLoc?.latitude ?? wp.order.lat) : null;
+        const lng = validated ? (endLoc?.longitude ?? wp.order.lng) : null;
         return { ...wp.order, lat, lng, sequence: seq + 2 };
       });
 

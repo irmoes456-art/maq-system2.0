@@ -102,17 +102,33 @@ async def _get_cached_geocode(db, address: str):
 async def _store_geocode_cache(db, address: str, lat: float, lng: float):
     """Store geocoded address in cache for future reuse"""
     addr_hash = _address_hash(address)
-    await db.geocode_cache.update_one(
-        {"address_hash": addr_hash},
-        {"$set": {
-            "address_hash": addr_hash,
-            "address": address[:500],
-            "lat": lat,
-            "lng": lng,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-        }},
-        upsert=True
-    )
+    doc = {"address_hash": addr_hash, "address": address[:500], "lat": lat, "lng": lng,
+           "cached_at": datetime.now(timezone.utc).isoformat()}
+    if await db.geocode_cache.find_one({"address_hash": addr_hash}, {"address_hash": 1}):
+        await db.geocode_cache.update_one({"address_hash": addr_hash}, {"$set": doc})
+    else:
+        await db.geocode_cache.insert_one({"id": str(uuid.uuid4()), **doc})
+
+
+def _is_own(technician: str, payload: dict) -> bool:
+    """Admin/outros perfis: sempre. Técnico: só se o roteiro é dele (nome completo ou primeiro nome)."""
+    if (payload or {}).get("role") != "technician":
+        return True
+    name = (payload.get("name") or "").strip().lower()
+    rt = (technician or "").strip().lower()
+    if not name or not rt:
+        return False
+    first = name.split()[0]
+    return rt == name or rt == first or rt.startswith(first + " ")
+
+
+async def _own_route(db, route_id: str, payload: dict) -> dict:
+    route = await db.routes.find_one({"id": route_id}, {"_id": 0})
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    if not _is_own(route.get("technician"), payload):
+        raise HTTPException(status_code=403, detail="Acesso restrito a roteiros do próprio técnico")
+    return route
 
 
 @router.get("/")
@@ -135,23 +151,14 @@ async def list_routes(payload: dict = Depends(verify_token)):
 
 @router.get("/{route_id}")
 async def get_route_by_id(route_id: str, payload: dict = Depends(verify_token)):
-    db = get_db()
-    route = await db.routes.find_one({"id": route_id}, {"_id": 0})
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
-    role = payload.get("role", "admin")
-    name = (payload.get("name") or "").strip().lower()
-    if role == "technician" and name:
-        rt = (route.get("technician") or "").strip().lower()
-        first = name.split()[0]
-        if rt != name and rt != first and not rt.startswith(first + " "):
-            raise HTTPException(status_code=403, detail="Acesso restrito a roteiros do próprio técnico")
-    return route
+    return await _own_route(get_db(), route_id, payload)
 
 
 @router.post("/")
-async def create_route(route_data: RouteCreate):
+async def create_route(route_data: RouteCreate, payload: dict = Depends(verify_token)):
     db = get_db()
+    if not _is_own(route_data.technician, payload):
+        raise HTTPException(status_code=403, detail="Técnico só pode criar roteiro para si mesmo")
     route_dict = route_data.dict()
     route_dict["id"] = str(uuid.uuid4())
     route_dict["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -166,8 +173,11 @@ async def create_route(route_data: RouteCreate):
 
 
 @router.put("/{route_id}")
-async def update_route(route_id: str, route_update: RouteUpdate):
+async def update_route(route_id: str, route_update: RouteUpdate, payload: dict = Depends(verify_token)):
     db = get_db()
+    await _own_route(db, route_id, payload)
+    if route_update.technician is not None and not _is_own(route_update.technician, payload):
+        raise HTTPException(status_code=403, detail="Técnico não pode passar o roteiro para outro técnico")
     update_data = {k: v for k, v in route_update.dict().items() if v is not None}
     if "orders" in update_data:
         update_data["orders"] = [o.dict() if hasattr(o, 'dict') else o for o in update_data["orders"]]
@@ -188,8 +198,9 @@ async def update_route(route_id: str, route_update: RouteUpdate):
 
 
 @router.delete("/{route_id}")
-async def delete_route(route_id: str):
+async def delete_route(route_id: str, payload: dict = Depends(verify_token)):
     db = get_db()
+    await _own_route(db, route_id, payload)
     result = await db.routes.delete_one({"id": route_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Route not found")
@@ -197,11 +208,9 @@ async def delete_route(route_id: str):
 
 
 @router.post("/{route_id}/duplicate")
-async def duplicate_route(route_id: str):
+async def duplicate_route(route_id: str, payload: dict = Depends(verify_token)):
     db = get_db()
-    route = await db.routes.find_one({"id": route_id}, {"_id": 0})
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
+    route = await _own_route(db, route_id, payload)
     route["id"] = str(uuid.uuid4())
     route["name"] = f"{route.get('name', 'Roteiro')} (Copia)"
     route["status"] = "Pendente"
@@ -213,13 +222,11 @@ async def duplicate_route(route_id: str):
 
 
 @router.put("/{route_id}/conclusion/{os_number}")
-async def update_os_conclusion(route_id: str, os_number: str, body: dict):
+async def update_os_conclusion(route_id: str, os_number: str, body: dict, payload: dict = Depends(verify_token)):
     db = get_db()
     conclusion = body.get("conclusion", "")
     observation = body.get("observation", None)
-    route = await db.routes.find_one({"id": route_id}, {"_id": 0})
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
+    route = await _own_route(db, route_id, payload)
     orders = route.get("orders", [])
     for order in orders:
         if order["os_number"] == os_number:
@@ -249,6 +256,48 @@ class CacheCoordsRequest(BaseModel):
     coords: List[CacheCoordsItem]
 
 
+_geo_fail: dict = {}  # endereço -> motivo (não repete chamada paga que já falhou)
+
+
+def _norm(s) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", str(s or "").lower()) if unicodedata.category(c) != "Mn").strip()
+
+
+async def _geocode_os(o: dict):
+    """Geocodifica o endereço completo. Só aceita ponto exato (número da casa) na cidade certa.
+    Retorna ((lat, lng), 'exact') ou (None, 'approximate'|'not_found'|'incomplete')."""
+    key = os.environ.get('GOOGLE_MAPS_API_KEY', '')
+    if not key or not o.get("address") or not o.get("city"):
+        return None, "incomplete"
+    street = f"{o.get('address') or ''} {o.get('number') or ''}".strip()
+    addr = ", ".join(p for p in [street, o.get("neighborhood"), o.get("city"), o.get("state") or "MG", o.get("cep")] if p)
+    if addr in _geo_fail:
+        return None, _geo_fail[addr]
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get("https://maps.googleapis.com/maps/api/geocode/json",
+                            params={"address": addr, "components": "country:BR", "region": "br", "key": key})
+        res = (r.json().get("results") or [None])[0]
+    except Exception as e:
+        logger.warning(f"geocode {o.get('os_number')}: {e!r}")
+        return None, "not_found"
+    if not res:
+        _geo_fail[addr] = "not_found"
+        return None, "not_found"
+    comps = res.get("address_components") or []
+    types = {t for c in comps for t in c.get("types", [])}
+    cities = {_norm(c.get("long_name")) for c in comps if {"administrative_area_level_2", "locality"} & set(c.get("types", []))}
+    exact = (res.get("geometry", {}).get("location_type") in ("ROOFTOP", "RANGE_INTERPOLATED")
+             and "street_number" in types and _norm(o.get("city")) in cities)
+    if not exact:
+        _geo_fail[addr] = "approximate"
+        return None, "approximate"
+    loc = res["geometry"]["location"]
+    await _store_geocode_cache(get_db(), addr, loc["lat"], loc["lng"])
+    return (loc["lat"], loc["lng"]), "exact"
+
+
 @router.post("/geocode")
 async def get_cached_coords(req: GeocodeRequest):
     """
@@ -259,12 +308,15 @@ async def get_cached_coords(req: GeocodeRequest):
     db = get_db()
     orders = await db.service_orders.find(
         {"os_number": {"$in": req.os_numbers}},
-        {"_id": 0, "os_number": 1, "lat": 1, "lng": 1, "address": 1, "number": 1, "neighborhood": 1, "city": 1, "state": 1}
+        {"_id": 0, "os_number": 1, "lat": 1, "lng": 1, "address": 1, "number": 1, "neighborhood": 1, "city": 1, "state": 1, "cep": 1}
     ).to_list(len(req.os_numbers))
 
+    sem = asyncio.Semaphore(5)
     results = []
+    missing = []
     for o in orders:
         has_coords = o.get("lat") is not None and o.get("lng") is not None
+        precision = "cached" if has_coords else None
 
         # If OS doesn't have coords, try the address-based cache
         if not has_coords:
@@ -280,18 +332,26 @@ async def get_cached_coords(req: GeocodeRequest):
                     {"os_number": o["os_number"]},
                     {"$set": {"lat": cached["lat"], "lng": cached["lng"]}}
                 )
+                precision = "cached"
 
-        results.append({
-            "os_number": o["os_number"],
-            "lat": o.get("lat"),
-            "lng": o.get("lng"),
-            "cached": has_coords,
-        })
+        item = {"os_number": o["os_number"], "lat": o.get("lat"), "lng": o.get("lng"), "cached": has_coords, "precision": precision}
+        results.append(item)
+        if not has_coords:
+            missing.append((o, item))
+
+    # Tenta localizar de novo quem não tem coordenada (máx. 30 por chamada).
+    async def _retry(o, item):
+        async with sem:
+            coords, item["precision"] = await _geocode_os(o)
+        if coords:
+            item.update(lat=coords[0], lng=coords[1], cached=True)
+            await db.service_orders.update_one({"os_number": o["os_number"]}, {"$set": {"lat": coords[0], "lng": coords[1]}})
+    await asyncio.gather(*[_retry(o, it) for o, it in missing[:30]])
 
     found_nums = {o["os_number"] for o in orders}
     for os_num in req.os_numbers:
         if os_num not in found_nums:
-            results.append({"os_number": os_num, "lat": None, "lng": None, "cached": False})
+            results.append({"os_number": os_num, "lat": None, "lng": None, "cached": False, "precision": "not_found"})
 
     cached_count = sum(1 for r in results if r["cached"])
     return {"results": results, "total": len(results), "cached": cached_count, "uncached": len(results) - cached_count}

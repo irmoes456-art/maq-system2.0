@@ -2197,7 +2197,7 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  onPrint(order, sigData);
+                  onPrint({ ...order, ...(editedOrder || {}) }, sigData);
                   axios.post(`${API}/service-orders/${encodeURIComponent(order.os_number)}/print-count`, {}, getAuthHeader())
                     .then(res => setPrintCount(res.data.print_count))
                     .catch(() => {});
@@ -2329,7 +2329,7 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => onPrint(order, sigData)}
+                    onClick={() => onPrint({ ...order, ...(editedOrder || {}) }, sigData)}
                     className="bg-green-50 border-2 border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-colors"
                     data-testid="modal-view-signatures"
                   >

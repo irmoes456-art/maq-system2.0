@@ -86,14 +86,16 @@ ACTIONS_PROMPT = (
     "(número da OS é gerado automaticamente se não informado)\n"
     '- {"type":"edit_docx","replacements":[{"find":"texto exato do documento","replace":"novo texto"}],"pdf":false} → edita o '
     "DOCX anexado mantendo layout e todo o resto do conteúdo igual (só troca os trechos indicados; use pdf=true para entregar em PDF).\n"
+    '- {"type":"send_whatsapp","os_number":"... (ou \"phone\":\"31999999999\")","text":"mensagem"} → envia WhatsApp pelo número oficial '
+    "da Mastermaq (o cliente precisa ter falado com a empresa nas últimas 24h, senão a Meta recusa).\n"
     '- {"type":"generate_pdf","title":"...","content":"texto completo do documento"} → gera PDF novo do zero e devolve link.\n'
-    "Ações create_route/update_route/update_os/create_os ficam aguardando o usuário clicar em Confirmar; diga isso em uma frase. "
+    "Ações create_route/update_route/update_os/create_os/send_whatsapp ficam aguardando o usuário clicar em Confirmar; diga isso em uma frase. "
     "Nunca escreva o JSON fora do bloco <acoes>."
 )
 OS_EDITABLE = {"status", "technician", "observations", "attendance_date", "priority", "reported_defect", "technical_diagnosis",
                "required_parts", "customer_name", "phone1", "address", "number", "neighborhood", "city", "model",
                "serial_number", "product", "service_type"}
-CONFIRM_TYPES = {"create_route", "update_route", "update_os", "create_os"}
+CONFIRM_TYPES = {"create_route", "update_route", "update_os", "create_os", "send_whatsapp"}
 CREATE_OS = None  # injetado pelo server.py (cria OS reutilizando o endpoint)
 
 
@@ -122,6 +124,8 @@ def summarize(a: dict) -> str:
         return f"Alterar roteiro \"{a.get('route')}\": {'; '.join(extra)}"
     if t == "update_os":
         return f"Alterar OS {a.get('os_number')}: " + "; ".join(f"{k}={v}" for k, v in (a.get("fields") or {}).items())
+    if t == "send_whatsapp":
+        return f"Enviar WhatsApp para {a.get('os_number') and 'OS ' + str(a['os_number']) or a.get('phone')}: \"{a.get('text')}\""
     if t == "create_os":
         return "Criar OS: " + "; ".join(f"{k}={v}" for k, v in (a.get("fields") or {}).items() if v)
     return t
@@ -142,6 +146,16 @@ async def execute(db, a: dict, payload: dict = None):
     """Executa ação confirmada. Retorna texto de resultado."""
     from routes_module import create_route, update_route, RouteCreate, RouteUpdate
     t = a["type"]
+    if t == "send_whatsapp":
+        from whatsapp_module import send_text
+        phone = a.get("phone")
+        if a.get("os_number"):
+            d = await db.service_orders.find_one({"os_number": str(a["os_number"])}, {"phone1": 1}) or {}
+            phone = d.get("phone1")
+            if not phone:
+                raise ValueError(f"OS {a['os_number']} sem telefone")
+        sent_to = await send_text(db, phone, a.get("text") or "")
+        return f"WhatsApp enviado para {sent_to}."
     if t == "create_os":
         r = await CREATE_OS(dict(a.get("fields") or {}), payload or {})
         num = r.get("os_number") if isinstance(r, dict) else getattr(r, "os_number", None)
@@ -149,7 +163,7 @@ async def execute(db, a: dict, payload: dict = None):
     if t == "create_route":
         nums = list(a.get("os_numbers") or [])[:9]
         r = await create_route(RouteCreate(name=a.get("name"), technician=a.get("technician") or "", date=a.get("date") or "",
-                                           orders=await _route_orders(db, nums)))
+                                           orders=await _route_orders(db, nums)), payload or {})
         return f"Roteiro \"{r.get('name')}\" criado com {len(nums)} OSs."
     if t == "update_route":
         ref = str(a.get("route") or "")
@@ -161,7 +175,7 @@ async def execute(db, a: dict, payload: dict = None):
             remove = {str(x) for x in a.get("remove_os") or []}
             keep = [str(o["os_number"]) for o in route.get("orders") or [] if str(o.get("os_number")) not in remove]
             fields["orders"] = await _route_orders(db, (keep + [str(x) for x in a.get("add_os") or [] if str(x) not in keep])[:9])
-        await update_route(route["id"], RouteUpdate(**fields))
+        await update_route(route["id"], RouteUpdate(**fields), payload or {})
         return f"Roteiro \"{route.get('name')}\" atualizado."
     if t == "update_os":
         fields = {k: v for k, v in (a.get("fields") or {}).items() if k in OS_EDITABLE}

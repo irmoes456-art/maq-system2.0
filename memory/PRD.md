@@ -463,6 +463,15 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Roteiro: `hasCoords` (número finito; 0 válido) substitui checagens `lat && lng`; base única BASE_LAT/BASE_LNG (removida -19.9245,-43.9352 da sugestão); mapa avisa OSs sem localização.
 - Bug: roteiro com 1 OS ficava preso em "Calculando rota..." (`orders.length < 2`) → corrigido para `< 1`.
 
+### 2026-10-27 — Impressão, Mi+WhatsApp, rotas
+- Impressão (printUtils): Diagnóstico Técnico agora sai em "Observações Técnicas"; imprimir usa o que está digitado no modal (order+editedOrder).
+- Mi: ação `send_whatsapp` (OS ou telefone, com confirmação) via `whatsapp_module.send_text`; contexto das últimas mensagens WhatsApp quando a pergunta cita whats/zap/mensagem.
+- `/api/routes/geocode`: re-geocodifica no servidor (Google Geocoding) OSs sem coordenada, máx 30/chamada; só aceita ROOFTOP/RANGE_INTERPOLATED com número e cidade igual → `precision` exact|cached|approximate|not_found|incomplete. Coordenadas adivinhadas pela Routes API não são mais gravadas.
+- `_store_geocode_cache` corrigido (upsert falhava no Supabase por id nulo).
+- Autorização: técnico só lê/edita/exclui/duplica/conclui os próprios roteiros e só cria/repassa para si (`_is_own`/`_own_route`). Mi passa o payload.
+- Mapa: falha da API mantém lista + pinos, banner "Tentar de novo"; botões Maps/Waze por OS, botões maiores no celular; navegação com ◀ Anterior / Pular ▶ / Waze (status `skipped`).
+
+
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
 - Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.
 - Status "Visita Realizada" (front OS_STATUSES/cores + backend OS_STATUS_COLORS). PUT /routes/{id} com status "Concluído" → todas as OSs do roteiro viram "Visita Realizada".
