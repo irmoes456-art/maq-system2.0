@@ -477,6 +477,11 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Mi (somente admin, como toda a Mi): `simulate_route` (imediato, Google Routes c/ trânsito, ordem otimizada, km/min, link Maps; não grava); com confirmação: `delete_os`, `sync_orders` (mesmo fluxo do botão, Hisense+HQ 30 dias), `generate_laudo` (fotos enviadas no chat = FOTO 1..8, resto da OS; diagnóstico estendido pela IA; source telecontrol_hisense → DOCX Hisense + PDF; demais → Mastermaq digital). Upload de fotos múltiplas na Mi.
 
 
+### 2026-10-28 — Tabela whatsapp_messages + laudo moderno
+- Supabase não tinha `whatsapp_messages` (Mi/envios davam 404 PGRST205). Criada via pooler (ver memory/supabase_sql.md), colunas to_number/from_number/ts conforme field_map do adapter. Migração: backend/migrations/whatsapp_messages.sql.
+- Laudo Mastermaq digital redesenhado: cards arredondados, títulos de seção com barra azul, fotos numeradas em vermelho, todo texto preto; removido ART/Batch e "Anotações Técnicas" (fica só "Observações técnicas" em negrito). 8 fotos cabem em 2 páginas.
+
+
 
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
 - Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.
