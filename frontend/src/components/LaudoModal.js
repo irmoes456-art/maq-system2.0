@@ -140,6 +140,7 @@ const LaudoModal = ({ open, onClose, order, getAuthHeader, onUpdated }) => {
   const [laudoType, setLaudoType] = useState(null); // null = show selector, 'hisense' or 'recall'
   const [currentStep, setCurrentStep] = useState(1);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [digitalLink, setDigitalLink] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
@@ -589,6 +590,22 @@ const LaudoModal = ({ open, onClose, order, getAuthHeader, onUpdated }) => {
     setIsGenerating(true);
     const activePhotoLabels = laudoType === 'recall' ? RECALL_PHOTO_LABELS : PHOTO_LABELS;
     const laudoData = { ...formData, ...finalData, images: images.map(img => img || ""), laudo_type: laudoType || 'hisense', photo_labels: activePhotoLabels };
+    if (laudoType === 'mastermaq') {
+      try {
+        const { data } = await axios.post(`${API}/laudo/mastermaq-digital`, laudoData, getAuthHeader());
+        const link = data.url || `${process.env.REACT_APP_BACKEND_URL}${data.path}`;
+        setDigitalLink(link);
+        navigator.clipboard?.writeText(link).catch(() => {});
+        window.open(link, '_blank');
+        toast.success('Laudo digital gerado — link copiado!');
+        axios.get(`${API}/laudo/history/${formData.os_number}`, getAuthHeader()).then(res => setLaudoHistory(res.data || [])).catch(() => {});
+      } catch (error) {
+        toast.error(error?.response?.data?.detail || 'Erro ao gerar laudo digital.');
+      } finally {
+        setIsGenerating(false);
+      }
+      return;
+    }
     try {
       const response = await axios.post(`${API}/laudo/generate-docx`, laudoData, {
         ...getAuthHeader(), responseType: 'blob'
@@ -1047,11 +1064,16 @@ const LaudoModal = ({ open, onClose, order, getAuthHeader, onUpdated }) => {
                 <Eye size={14} className="mr-1" /> Pré-visualizar
               </Button>
             ) : (
+              <>
+              {digitalLink && (
+                <a href={digitalLink} target="_blank" rel="noreferrer" className="text-xs underline text-blue-700 self-center" data-testid="laudo-digital-link">Abrir laudo digital</a>
+              )}
               <Button size="sm" onClick={generateLaudo} disabled={isGenerating}
                 className="bg-blue-600 hover:bg-blue-700" data-testid="laudo-generate-btn">
                 {isGenerating ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Download size={14} className="mr-1" />}
-                Gerar Laudo DOCX
+                {laudoType === 'mastermaq' ? 'Gerar Laudo Digital (PDF)' : 'Gerar Laudo DOCX'}
               </Button>
+              </>
             )}
           </div>
         </div>

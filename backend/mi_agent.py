@@ -88,15 +88,27 @@ ACTIONS_PROMPT = (
     "DOCX anexado mantendo layout e todo o resto do conteúdo igual (só troca os trechos indicados; use pdf=true para entregar em PDF).\n"
     '- {"type":"send_whatsapp","os_number":"... (ou \"phone\":\"31999999999\")","text":"mensagem"} → envia WhatsApp pelo número oficial '
     "da Mastermaq (o cliente precisa ter falado com a empresa nas últimas 24h, senão a Meta recusa).\n"
+    '- {"type":"delete_os","os_number":"..."} → exclui a OS definitivamente.\n'
+    '- {"type":"sync_orders"} → puxa as ordens do Telecontrol (Hisense e HQ ao mesmo tempo, do último mês até hoje).\n'
+    '- {"type":"generate_laudo","os_number":"...","technical_diagnosis":"...","installation_correct":"SIM|NÃO","required_parts":"...",'
+    '"technical_notes":"...","final_status":"..."} → gera o laudo com as fotos enviadas na conversa (na ordem FOTO 1..8; '
+    "as que faltarem vêm da OS). Escreva technical_diagnosis ESTENDIDO, técnico e profissional, a partir do que o usuário "
+    "informou, sem inventar fatos. OS do Telecontrol Hisense usa o modelo Hisense; OS da loja gera o laudo Mastermaq digital. "
+    "Se o usuário não disser o número da OS, pergunte antes.\n"
+    '- {"type":"simulate_route","os_numbers":["..."],"optimize":true,"origin":"base | lat,lng | endereço","return_to_base":true} '
+    "→ calcula NA HORA a rota real (Google, com trânsito): ordem otimizada, km e minutos por trecho e total, link do Maps. "
+    "Não grava nada. Use sempre que pedirem para calcular/simular rota ou roteiro; nunca invente distâncias.\n"
     '- {"type":"generate_pdf","title":"...","content":"texto completo do documento"} → gera PDF novo do zero e devolve link.\n'
-    "Ações create_route/update_route/update_os/create_os/send_whatsapp ficam aguardando o usuário clicar em Confirmar; diga isso em uma frase. "
+    "Ações create_route/update_route/update_os/create_os/send_whatsapp/delete_os/sync_orders/generate_laudo ficam aguardando o usuário clicar em Confirmar; diga isso em uma frase. "
     "Nunca escreva o JSON fora do bloco <acoes>."
 )
 OS_EDITABLE = {"status", "technician", "observations", "attendance_date", "priority", "reported_defect", "technical_diagnosis",
                "required_parts", "customer_name", "phone1", "address", "number", "neighborhood", "city", "model",
                "serial_number", "product", "service_type"}
-CONFIRM_TYPES = {"create_route", "update_route", "update_os", "create_os", "send_whatsapp"}
+CONFIRM_TYPES = {"create_route", "update_route", "update_os", "create_os", "send_whatsapp", "delete_os", "sync_orders", "generate_laudo"}
 CREATE_OS = None  # injetado pelo server.py (cria OS reutilizando o endpoint)
+SYNC_ORDERS = None  # injetado pelo server.py (sync Hisense + HQ)
+BASE = (-19.8881334, -43.9420748)
 
 
 def parse_actions(answer: str):
@@ -124,6 +136,13 @@ def summarize(a: dict) -> str:
         return f"Alterar roteiro \"{a.get('route')}\": {'; '.join(extra)}"
     if t == "update_os":
         return f"Alterar OS {a.get('os_number')}: " + "; ".join(f"{k}={v}" for k, v in (a.get("fields") or {}).items())
+    if t == "delete_os":
+        return f"EXCLUIR OS {a.get('os_number')} (definitivo)"
+    if t == "sync_orders":
+        return "Puxar ordens do Telecontrol (Hisense + HQ, último mês)"
+    if t == "generate_laudo":
+        n = len(a.get("photos") or [])
+        return f"Gerar laudo da OS {a.get('os_number')} com {n} foto(s) enviada(s) — diagnóstico: {(a.get('technical_diagnosis') or '')[:300]}"
     if t == "send_whatsapp":
         return f"Enviar WhatsApp para {a.get('os_number') and 'OS ' + str(a['os_number']) or a.get('phone')}: \"{a.get('text')}\""
     if t == "create_os":
@@ -146,6 +165,16 @@ async def execute(db, a: dict, payload: dict = None):
     """Executa ação confirmada. Retorna texto de resultado."""
     from routes_module import create_route, update_route, RouteCreate, RouteUpdate
     t = a["type"]
+    if t == "delete_os":
+        num = str(a.get("os_number") or "")
+        res = await db.service_orders.delete_one({"os_number": num})
+        if not res.deleted_count:
+            raise ValueError(f"OS {num} não encontrada")
+        return f"OS {num} excluída."
+    if t == "sync_orders":
+        return await SYNC_ORDERS()
+    if t == "generate_laudo":
+        return await _generate_laudo(db, a)
     if t == "send_whatsapp":
         from whatsapp_module import send_text
         phone = a.get("phone")
@@ -191,6 +220,98 @@ async def execute(db, a: dict, payload: dict = None):
             raise ValueError(f"OS {a.get('os_number')} não encontrada")
         return f"OS {a.get('os_number')} atualizada."
     raise ValueError(f"Ação desconhecida: {t}")
+
+
+# --- Laudo ---
+LAUDO_FIELDS = ("os_number", "customer_name", "model", "serial_number", "batch", "brand", "service_type", "reported_defect",
+                "technical_diagnosis", "installation_correct", "required_parts", "technician",
+                "voltage_f1f2", "voltage_f1_terra", "voltage_f2_terra")
+
+
+async def _generate_laudo(db, a: dict) -> dict:
+    import base64
+    from manuais_module import get_object, put_object
+    num = str(a.get("os_number") or "")
+    o = await db.service_orders.find_one({"os_number": num}, {"_id": 0})
+    if not o:
+        raise ValueError(f"OS {num} não encontrada")
+    sent = []
+    for pid in a.get("photos") or []:
+        data, _ = await asyncio.to_thread(get_object, f"{FILE_PREFIX}/{pid}.jpg")
+        sent.append("data:image/jpeg;base64," + base64.b64encode(data).decode())
+    images = [sent[i] if i < len(sent) else (o.get(f"photo_{i + 1}") or "") for i in range(8)]
+    fields = {k: str(a[k]) for k in ("technical_diagnosis", "installation_correct", "required_parts", "technical_notes", "final_status") if a.get(k)}
+    d = {**{k: str(o.get(k) or "") for k in LAUDO_FIELDS}, **fields, "images": images,
+         "location": "BELO HORIZONTE", "date": datetime.now().strftime("%d/%m/%Y"), "photo_labels": []}
+    upd = {k: v for k, v in fields.items() if k in ("technical_diagnosis", "installation_correct", "required_parts")}
+    if upd:
+        await db.service_orders.update_one({"os_number": num}, {"$set": {**upd, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    if o.get("source") == "telecontrol_hisense":
+        from laudo_generator import generate_laudo_from_template
+        docx = await asyncio.to_thread(generate_laudo_from_template, d)
+        tok = uuid.uuid4().hex
+        await asyncio.to_thread(put_object, f"{FILE_PREFIX}/{tok}.docx", docx,
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        res = {"text": f"Laudo Hisense da OS {num} gerado.", "url2": f"/api/mi/files/{tok}.docx"}
+        try:
+            pdf = await asyncio.to_thread(_docx_to_pdf, docx)
+            await asyncio.to_thread(put_object, f"{FILE_PREFIX}/{tok}.pdf", pdf, "application/pdf")
+            res["url"] = f"/api/mi/files/{tok}.pdf"
+        except Exception as e:
+            logger.warning(f"[Mi] laudo PDF falhou (DOCX ok): {e!r}")
+        return res
+    import laudo_digital
+    r = await laudo_digital.create(d)
+    return {"text": f"Laudo Mastermaq digital da OS {num} gerado.", "url": r["path"]}
+
+
+# --- Rota ---
+async def simulate_route(db, a: dict) -> str:
+    from routes_module import compute_route, ComputeRouteRequest, Waypoint
+    from urllib.parse import quote
+    orders = []
+    for n in [str(x) for x in (a.get("os_numbers") or [])][:25]:
+        d = await db.service_orders.find_one({"os_number": n}, {"_id": 0, "os_number": 1, "customer_name": 1, "lat": 1, "lng": 1,
+                                                              "address": 1, "number": 1, "neighborhood": 1, "city": 1})
+        if d:
+            orders.append(d)
+    if not orders:
+        raise ValueError("nenhuma das OSs foi encontrada")
+
+    def wp(o):
+        try:
+            return Waypoint(lat=float(o["lat"]), lng=float(o["lng"]))
+        except (KeyError, TypeError, ValueError):
+            return Waypoint(address=", ".join(str(o.get(k)) for k in ("address", "number", "neighborhood", "city") if o.get(k)) + ", MG")
+
+    base = Waypoint(lat=BASE[0], lng=BASE[1])
+    org = str(a.get("origin") or "base").strip()
+    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)", org)
+    origin = base if org.lower() == "base" else (Waypoint(lat=float(m[1]), lng=float(m[2])) if m else Waypoint(address=org))
+    ret = a.get("return_to_base", True) is not False
+    inter = orders if ret else orders[:-1]
+    data = await compute_route(ComputeRouteRequest(origin=origin, destination=base if ret else wp(orders[-1]),
+                                                   intermediates=[wp(o) for o in inter],
+                                                   optimize_waypoint_order=a.get("optimize", True) is not False))
+    route = data["routes"][0]
+    idx = route.get("optimizedIntermediateWaypointIndex") or list(range(len(inter)))
+    seq = [inter[i] for i in idx] + ([] if ret else [orders[-1]])
+    legs = route.get("legs") or []
+    km = lambda lg: (lg.get("distanceMeters") or 0) / 1000  # noqa: E731
+    mins = lambda lg: round(int(str(lg.get("duration") or "0s").rstrip("s") or 0) / 60)  # noqa: E731
+    lines = ["**Rota calculada (Google, com trânsito agora)**"]
+    for i, o in enumerate(seq):
+        lg = legs[i] if i < len(legs) else {}
+        lines.append(f"{i + 1}. OS {o['os_number']} — {o.get('customer_name') or ''} ({o.get('neighborhood') or ''}) — {km(lg):.1f} km, {mins(lg)} min")
+    if ret and len(legs) > len(seq):
+        lines.append(f"Retorno à base — {km(legs[-1]):.1f} km, {mins(legs[-1])} min")
+    lines.append(f"**Total: {sum(km(lg) for lg in legs):.1f} km, {sum(mins(lg) for lg in legs)} min** (sem tempo de atendimento)")
+    pts = [f"{origin.lat},{origin.lng}" if origin.lat is not None else origin.address]
+    pts += [f"{w.lat},{w.lng}" if w.lat is not None else w.address for w in (wp(o) for o in seq)]
+    if ret:
+        pts.append(f"{BASE[0]},{BASE[1]}")
+    lines.append("Abrir no Maps: https://www.google.com/maps/dir/" + "/".join(quote(p) for p in pts))
+    return "\n".join(lines)
 
 
 # --- PDF ---

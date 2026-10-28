@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Send, Trash2, MessageSquare, Loader2, Sparkles, Paperclip, X, FileText, Check, Brain } from 'lucide-react';
+import { Plus, Send, Trash2, MessageSquare, Loader2, Sparkles, Paperclip, X, FileText, Check, Brain, Camera } from 'lucide-react';
 import DashboardLayout from '../components/DashboardLayout';
 import { useAuth } from '../context/AuthContext';
 
@@ -15,8 +15,10 @@ const SUGGESTIONS = [
 ];
 
 // Markdown mínimo estilo ChatGPT: **negrito**, títulos, listas '-'/'1.'; descarta tabelas/separadores se vierem.
-const Inline = ({ text }) => text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
-  p.startsWith('**') && p.endsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong> : <React.Fragment key={i}>{p}</React.Fragment>);
+const Inline = ({ text }) => text.split(/(\*\*[^*]+\*\*|https?:\/\/\S+)/g).map((p, i) =>
+  p.startsWith('**') && p.endsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong>
+    : /^https?:\/\//.test(p) ? <a key={i} href={p} target="_blank" rel="noreferrer" className="underline break-all" style={{ color: NAVY }}>{p.includes('google.com/maps') ? 'Abrir no Google Maps' : p}</a>
+    : <React.Fragment key={i}>{p}</React.Fragment>);
 
 const cleanLine = (line) => {
   if (/^\s*(\|?\s*:?-{2,}:?\s*)+\|?\s*$/.test(line) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line) || /^\s*```/.test(line)) return null;
@@ -49,6 +51,7 @@ const ActionCard = ({ a, onDecide }) => (
         <p className="text-gray-800">{a.summary}</p>
         <p className="text-gray-500 mt-0.5">{a.result || ACTION_STATUS[a.status]}</p>
         {a.url && <a href={`${process.env.REACT_APP_BACKEND_URL}${a.url}`} target="_blank" rel="noreferrer" className="font-medium underline" style={{ color: NAVY }} data-testid="mi-pdf-link">Abrir arquivo</a>}
+        {a.url2 && <a href={`${process.env.REACT_APP_BACKEND_URL}${a.url2}`} target="_blank" rel="noreferrer" className="ml-3 font-medium underline" style={{ color: NAVY }} data-testid="mi-docx-link">Baixar DOCX</a>}
       </div>
     </div>
     {a.status === 'pending' && (
@@ -73,6 +76,7 @@ const Bubble = ({ m, onDecide }) => {
       >
         <MessageBody content={m.content} />
         {m.attachment_name && <p className="mt-1 text-xs opacity-80 flex items-center gap-1"><Paperclip size={12} /> {m.attachment_name}</p>}
+        {m.photo_ids?.length > 0 && <p className="mt-1 text-xs opacity-80 flex items-center gap-1"><Camera size={12} /> {m.photo_ids.length} foto(s)</p>}
         {(m.actions || []).map(a => <ActionCard key={a.id} a={a} onDecide={onDecide} />)}
       </div>
     </div>
@@ -126,18 +130,21 @@ export default function MiPage() {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [attachment, setAttachment] = useState(null);
+  const [photos, setPhotos] = useState([]);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
   const endRef = useRef(null);
 
-  const uploadFile = async (file) => {
-    if (!file) return;
+  const uploadFiles = async (files) => {
     setUploading(true);
-    const fd = new FormData();
-    fd.append('file', file);
     try {
-      const res = await axios.post(`${API}/mi/upload`, fd, auth());
-      setAttachment({ name: res.data.name, text: res.data.text, fileId: res.data.file_id });
+      for (const file of Array.from(files || [])) {
+        const fd = new FormData();
+        fd.append('file', file);
+        const res = await axios.post(`${API}/mi/upload`, fd, auth());
+        if (res.data.photo_id) setPhotos(prev => [...prev, res.data.photo_id]);
+        else setAttachment({ name: res.data.name, text: res.data.text, fileId: res.data.file_id });
+      }
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Erro ao ler arquivo');
     } finally {
@@ -182,11 +189,13 @@ export default function MiPage() {
     if (!msg || sending) return;
     setInput('');
     const att = attachment;
+    const pics = photos;
     setAttachment(null);
-    setMessages(prev => [...prev, { id: `tmp-${Date.now()}`, role: 'user', content: msg, attachment_name: att?.name }]);
+    setPhotos([]);
+    setMessages(prev => [...prev, { id: `tmp-${Date.now()}`, role: 'user', content: msg, attachment_name: att?.name, photo_ids: pics }]);
     setSending(true);
     try {
-      const res = await axios.post(`${API}/mi/chat`, { message: msg, conversation_id: activeId, attachment_name: att?.name, attachment_text: att?.text, attachment_file_id: att?.fileId }, auth());
+      const res = await axios.post(`${API}/mi/chat`, { message: msg, conversation_id: activeId, attachment_name: att?.name, attachment_text: att?.text, attachment_file_id: att?.fileId, photo_ids: pics }, auth());
       setActiveId(res.data.conversation_id);
       setMessages(prev => [...prev, res.data.message]);
       loadConvs();
@@ -225,8 +234,14 @@ export default function MiPage() {
                 <button type="button" onClick={() => setAttachment(null)} className="text-gray-400 hover:text-red-600" data-testid="mi-attachment-remove"><X size={12} /></button>
               </div>
             )}
+            {photos.length > 0 && (
+              <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-xs text-gray-600" data-testid="mi-photos-chip">
+                <Camera size={12} /> {photos.length} foto(s) — viram FOTO 1..{photos.length} do laudo
+                <button type="button" onClick={() => setPhotos([])} className="text-gray-400 hover:text-red-600" data-testid="mi-photos-remove"><X size={12} /></button>
+              </div>
+            )}
             <div className="max-w-3xl mx-auto flex items-end gap-2 rounded-2xl border border-gray-300 px-3 py-2 focus-within:border-gray-500 transition-colors">
-              <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.csv,.md" className="hidden" onChange={e => uploadFile(e.target.files?.[0])} data-testid="mi-file-input" />
+              <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.csv,.md,image/*" className="hidden" onChange={e => uploadFiles(e.target.files)} data-testid="mi-file-input" />
               <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} className="w-9 h-9 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-100 transition-colors" data-testid="mi-attach-btn">
                 {uploading ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
               </button>

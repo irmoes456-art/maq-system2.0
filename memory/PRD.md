@@ -471,6 +471,12 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Autorização: técnico só lê/edita/exclui/duplica/conclui os próprios roteiros e só cria/repassa para si (`_is_own`/`_own_route`). Mi passa o payload.
 - Mapa: falha da API mantém lista + pinos, banner "Tentar de novo"; botões Maps/Waze por OS, botões maiores no celular; navegação com ◀ Anterior / Pular ▶ / Waze (status `skipped`).
 
+### 2026-10-28 — Mi (rota, exclusão, sync, laudo) + Laudo Mastermaq digital
+- `laudo_digital.py` (reportlab): PDF igual à pré-visualização, azul/vermelho, fundo branco, texto preto, logo + dados Mastermaq (backend/assets/mastermaq-logo.png). Sem assinatura (decisão do usuário). Salvo em `shared-pdfs/` → link permanente `/api/files/temp-pdf/{token}`.
+- `POST /api/laudo/mastermaq-digital`; LaudoModal (tipo Mastermaq) gera PDF, abre, copia link e mostra "Abrir laudo digital".
+- Mi (somente admin, como toda a Mi): `simulate_route` (imediato, Google Routes c/ trânsito, ordem otimizada, km/min, link Maps; não grava); com confirmação: `delete_os`, `sync_orders` (mesmo fluxo do botão, Hisense+HQ 30 dias), `generate_laudo` (fotos enviadas no chat = FOTO 1..8, resto da OS; diagnóstico estendido pela IA; source telecontrol_hisense → DOCX Hisense + PDF; demais → Mastermaq digital). Upload de fotos múltiplas na Mi.
+
+
 
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
 - Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.

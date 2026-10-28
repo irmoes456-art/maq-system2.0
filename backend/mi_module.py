@@ -9,7 +9,7 @@ import subprocess
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
@@ -274,6 +274,7 @@ class ChatBody(BaseModel):
     attachment_name: Optional[str] = None
     attachment_text: Optional[str] = None
     attachment_file_id: Optional[str] = None
+    photo_ids: List[str] = []
 
 
 SYSTEM_FULL = (SYSTEM + "\nREGIONAIS DE SABARÁ (use para localizar OSs e montar roteiros):\n" + mi_agent.regions_text()
@@ -316,6 +317,13 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
     @api_router.post("/mi/upload")
     async def mi_upload(file: UploadFile = File(...), _: dict = Depends(require_admin)):
         data = await file.read()
+        if (file.content_type or "").startswith("image/") or re.search(r"\.(jpe?g|png|webp|heic)$", file.filename or "", re.I):
+            from laudo_generator import _to_jpeg_bytes
+            from manuais_module import put_object
+            pid = uuid.uuid4().hex
+            jpg = await asyncio.to_thread(_to_jpeg_bytes, data)
+            await asyncio.to_thread(put_object, f"{mi_agent.FILE_PREFIX}/{pid}.jpg", jpg, "image/jpeg")
+            return {"name": file.filename, "photo_id": pid}
         try:
             text = await asyncio.to_thread(mi_agent.extract_upload, data, file.filename or "")
         except ValueError as e:
@@ -327,7 +335,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
     @api_router.get("/mi/files/{name}")
     async def mi_file(name: str):
         """Download público (token aleatório) dos arquivos gerados pela Mi."""
-        m = re.fullmatch(r"([0-9a-f]{32})\.(pdf|docx)", name)
+        m = re.fullmatch(r"([0-9a-f]{32})\.(pdf|docx|jpg)", name)
         if not m:
             raise HTTPException(status_code=404, detail="Arquivo inexistente")
         try:
@@ -335,7 +343,7 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         except Exception:
             raise HTTPException(status_code=404, detail="Arquivo inexistente")
         from fastapi.responses import Response
-        disp = "inline" if m.group(2) == "pdf" else "attachment"
+        disp = "attachment" if m.group(2) == "docx" else "inline"
         return Response(content=data, media_type=ctype,
                         headers={"Content-Disposition": f'{disp}; filename="documento_mi.{m.group(2)}"'})
 
@@ -348,9 +356,10 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         await mongo_db["mi_memories"].delete_one({"id": mid, "user_email": payload["email"]})
         return {"ok": True}
 
-    async def _set_action_status(aid, status, result):
+    async def _set_action_status(aid, status, result, urls=None):
+        extra = {f"actions.$.{k}": v for k, v in (urls or {}).items()}
         await mongo_db["mi_actions"].update_one({"id": aid}, {"$set": {"status": status, "result": result}})
-        await msgs.update_one({"actions.id": aid}, {"$set": {"actions.$.status": status, "actions.$.result": result}})
+        await msgs.update_one({"actions.id": aid}, {"$set": {"actions.$.status": status, "actions.$.result": result, **extra}})
 
     @api_router.post("/mi/actions/{aid}/{decision}")
     async def decide_action(aid: str, decision: str, payload: dict = Depends(require_admin)):
@@ -360,13 +369,17 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         if decision == "cancel":
             await _set_action_status(aid, "canceled", "Cancelada")
             return {"status": "canceled", "result": "Cancelada"}
+        urls = {}
         try:
             result = await mi_agent.execute(db, act["action"], payload)
+            if isinstance(result, dict):
+                urls = {k: result[k] for k in ("url", "url2") if result.get(k)}
+                result = result.get("text") or "Feito"
             status = "done"
         except Exception as e:
             result, status = f"Erro: {e}", "error"
-        await _set_action_status(aid, status, result)
-        return {"status": status, "result": result}
+        await _set_action_status(aid, status, result, urls)
+        return {"status": status, "result": result, **urls}
 
     @api_router.post("/mi/chat")
     async def mi_chat(body: ChatBody, payload: dict = Depends(require_admin)):
@@ -389,7 +402,9 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
         history = await msgs.find({"conversation_id": cid}, {"_id": 0}).sort("created_at", -1).to_list(10)
         await msgs.insert_one({"id": str(uuid.uuid4()), "conversation_id": cid, "role": "user", "content": text,
                                "attachment_name": body.attachment_name, "attachment_text": body.attachment_text,
-                               "attachment_file_id": body.attachment_file_id, "created_at": now})
+                               "attachment_file_id": body.attachment_file_id, "photo_ids": body.photo_ids, "created_at": now})
+        conv_photos = [p async for m in msgs.find({"conversation_id": cid, "role": "user"}, {"photo_ids": 1}).sort("created_at", 1)
+                       for p in (m.get("photo_ids") or [])][-8:]
         attach = body.attachment_text and (body.attachment_name, body.attachment_text)
         file_id = body.attachment_file_id
         if not attach:
@@ -428,7 +443,8 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
             + f"## Roteiros (os que batem com a pergunta em detalhe + recentes)\n{routes_txt}\n\n"
             f"## Manuais disponíveis\n" + "\n".join(f"- {t}" for t in titles) + "\n\n"
             f"## Trechos de manuais relevantes\n{man_txt}\n\n"
-            f"## Conversa anterior\n{hist_txt or '(início)'}\n\n"
+            + (f"## Fotos enviadas nesta conversa: {len(conv_photos)} (serão FOTO 1..{len(conv_photos)} do laudo)\n\n" if conv_photos else "")
+            + f"## Conversa anterior\n{hist_txt or '(início)'}\n\n"
             f"## Pergunta\n{text}"
         )
         try:
@@ -471,7 +487,17 @@ def setup_mi_routes(api_router: APIRouter, db, mongo_db, require_admin):
                 except Exception as e:
                     logger.error(f"[Mi] edit_docx falhou: {e!r}")
                     actions.append({"id": aid, "type": "pdf", "summary": f"Falha ao editar documento: {e}", "status": "error"})
+            elif a["type"] == "simulate_route":
+                try:
+                    txt = await mi_agent.simulate_route(db, a)
+                    answer = f"{answer}\n\n{txt}".strip()
+                    actions.append({"id": aid, "type": "route", "summary": "Rota simulada (nada foi gravado)", "status": "done"})
+                except Exception as e:
+                    logger.error(f"[Mi] simulate_route falhou: {e!r}")
+                    actions.append({"id": aid, "type": "route", "summary": f"Não consegui calcular a rota: {getattr(e, 'detail', e)}", "status": "error"})
             elif a["type"] in mi_agent.CONFIRM_TYPES:
+                if a["type"] == "generate_laudo" and not a.get("photos"):
+                    a["photos"] = conv_photos
                 await mongo_db["mi_actions"].insert_one({"id": aid, "user_email": email, "conversation_id": cid, "action": a,
                                                          "status": "pending", "created_at": now})
                 actions.append({"id": aid, "type": a["type"], "summary": mi_agent.summarize(a), "status": "pending"})

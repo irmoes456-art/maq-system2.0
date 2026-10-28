@@ -2749,6 +2749,24 @@ async def generate_laudo_word(data: LaudoData, _: dict = Depends(verify_token)):
         logger.error(f"Error generating DOCX: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@api_router.post("/laudo/mastermaq-digital")
+async def generate_mastermaq_digital(data: LaudoData, _: dict = Depends(verify_token)):
+    """Laudo Mastermaq digital: PDF permanente + link público."""
+    import laudo_digital
+    try:
+        res = await laudo_digital.create(data.dict())
+    except Exception as e:
+        logger.error(f"laudo digital falhou: {e!r}")
+        raise HTTPException(status_code=500, detail="Falha ao gerar o laudo digital")
+    try:
+        await db.laudo_history.insert_one({"id": str(uuid.uuid4()), "os_number": data.os_number, "customer_name": data.customer_name,
+                                           "model": data.model, "technician": data.technician,
+                                           "generated_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as hist_err:
+        logger.warning(f"laudo history: {hist_err}")
+    return res
+
+
 @api_router.get("/laudo/history/{os_number}")
 async def get_laudo_history(os_number: str, _: dict = Depends(verify_token)):
     """Get laudo generation history for an OS"""
@@ -3436,6 +3454,22 @@ async def _mi_create_os(fields: dict, payload: dict):
 
 import mi_agent as _mi_agent  # noqa: E402
 _mi_agent.CREATE_OS = _mi_create_os
+
+
+async def _mi_sync_orders():
+    """Mi (sync_orders confirmada): mesmo fluxo do botão Sincronizar (Hisense + HQ, último mês)."""
+    if not SCRAPER_AVAILABLE:
+        raise ValueError("Sincronização indisponível neste ambiente (Playwright ausente)")
+    running = await db.sync_logs.find_one({"status": "running"})
+    if running:
+        return "Já existe uma sincronização em andamento."
+    sync_id = str(uuid.uuid4())
+    await db.sync_logs.insert_one({"id": sync_id, "timestamp": datetime.now(timezone.utc).isoformat(), "status": "running",
+                                   "orders_synced": 0, "orders_updated": 0, "days_range": 30, "errors": []})
+    asyncio.create_task(run_background_sync(sync_id, 30))
+    return "Sincronização Hisense + HQ iniciada (último mês). As ordens aparecem em alguns minutos."
+
+_mi_agent.SYNC_ORDERS = _mi_sync_orders
 
 
 @app.on_event("startup")
