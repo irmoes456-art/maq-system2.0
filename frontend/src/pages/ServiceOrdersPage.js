@@ -788,8 +788,8 @@ const fetchOrders = useCallback(async () => {
       <div className="space-y-6" data-testid="service-orders-page">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-            <TabsList className="bg-gray-100">
-              <TabsTrigger value="history" data-testid="tab-history">
+            <TabsList className="bg-gray-100 w-full sm:w-auto justify-start overflow-x-auto overflow-y-hidden" data-testid="os-tabs-list">
+              <TabsTrigger value="history" className="shrink-0" data-testid="tab-history">
                 Histórico de OSs {totalItems > 0 && <span className="ml-1.5 bg-blue-100 text-blue-700 text-xs px-1.5 py-0.5 rounded-full font-medium">{totalItems}</span>}
               </TabsTrigger>
               <TabsTrigger value="overdue" data-testid="tab-overdue">

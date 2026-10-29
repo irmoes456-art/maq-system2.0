@@ -78,26 +78,40 @@ class TelecontrolScraper:
     async def start_browser(self):
         """Initialize browser instance"""
         try:
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--disable-software-rasterizer',
-                    '--disable-extensions',
-                    '--no-zygote',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--disable-background-networking',
-                ]
-            )
-            logger.info(f"[{self.source_label}] Browser started successfully")
+            await self._launch()
         except Exception as e:
-            logger.exception(f"[{self.source_label}] Failed to start browser: {str(e)}")
-            raise
+            if "Executable doesn't exist" not in str(e) and "playwright install" not in str(e):
+                logger.exception(f"[{self.source_label}] Failed to start browser: {str(e)}")
+                raise
+            # Produção pode vir sem o Chromium do Playwright: baixa uma vez e tenta de novo.
+            logger.warning(f"[{self.source_label}] Chromium ausente — instalando (playwright install chromium)")
+            import sys
+            proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "playwright", "install", "chromium",
+                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out = (await proc.communicate())[0].decode(errors="replace")
+            logger.info(f"[{self.source_label}] playwright install exit={proc.returncode}: {out[-500:]}")
+            if self.playwright:
+                await self.playwright.stop()
+            await self._launch()
+
+    async def _launch(self):
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-software-rasterizer',
+                '--disable-extensions',
+                '--no-zygote',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--disable-background-networking',
+            ]
+        )
+        logger.info(f"[{self.source_label}] Browser started successfully")
         
     async def close_browser(self):
         """Close browser instance safely"""

@@ -291,7 +291,7 @@ async def simulate_route(db, a: dict) -> str:
     ret = a.get("return_to_base", True) is not False
     inter = orders if ret else orders[:-1]
     data = await compute_route(ComputeRouteRequest(origin=origin, destination=base if ret else wp(orders[-1]),
-                                                   intermediates=[wp(o) for o in inter],
+                                                   intermediates=[wp(o) for o in inter], round_trip=ret,
                                                    optimize_waypoint_order=a.get("optimize", True) is not False))
     route = data["routes"][0]
     idx = route.get("optimizedIntermediateWaypointIndex") or list(range(len(inter)))

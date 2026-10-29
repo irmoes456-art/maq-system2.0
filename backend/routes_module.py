@@ -89,6 +89,22 @@ def _address_hash(address: str) -> str:
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
 
+def _os_address(o: dict) -> str:
+    """Chave única de endereço (cache e geocode): 'Rua X 123, Bairro, Cidade, UF'."""
+    street = " ".join(str(o.get(k) or "").strip() for k in ("address", "number")).strip()
+    parts = [street, o.get("neighborhood"), o.get("city"), o.get("state") or "MG"]
+    return ", ".join(str(p).strip() for p in parts if p and str(p).strip())
+
+
+def _valid_br(lat, lng) -> bool:
+    """Dentro do Brasil (lat -34..6, lng -74..-28) — pega lat/lng invertidos ou zerados."""
+    try:
+        lat, lng = float(lat), float(lng)
+    except (TypeError, ValueError):
+        return False
+    return -34.0 <= lat <= 6.0 and -74.5 <= lng <= -28.0
+
+
 async def _get_cached_geocode(db, address: str):
     """Look up address in geocode_cache table"""
     addr_hash = _address_hash(address)
@@ -134,19 +150,9 @@ async def _own_route(db, route_id: str, payload: dict) -> dict:
 @router.get("/")
 async def list_routes(payload: dict = Depends(verify_token)):
     db = get_db()
-    role = payload.get("role", "admin")
-    name = (payload.get("name") or "").strip()
-    query = {}
-    if role == "technician" and name:
-        # Match against the technician field — first name substring (case-insensitive).
-        # Routes are often saved with the technician's first name only
-        # ("Nelson") while user records may carry the full name
-        # ("Nelson Tecnico"). Substring match by first name is intuitive
-        # and the supabase adapter turns $regex → ilike *pattern*.
-        first = name.split()[0]
-        query = {"technician": {"$regex": first}}
-    routes = await db.routes.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return routes
+    routes = await db.routes.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    # Técnico: filtra em Python com a mesma regra de dono (sem regex — nome com caractere especial quebrava).
+    return [r for r in routes if _is_own(r.get("technician"), payload)]
 
 
 @router.get("/{route_id}")
@@ -178,6 +184,8 @@ async def update_route(route_id: str, route_update: RouteUpdate, payload: dict =
     await _own_route(db, route_id, payload)
     if route_update.technician is not None and not _is_own(route_update.technician, payload):
         raise HTTPException(status_code=403, detail="Técnico não pode passar o roteiro para outro técnico")
+    if route_update.orders is not None and len(route_update.orders) == 0:
+        raise HTTPException(status_code=400, detail="Lista de OSs vazia — roteiro não alterado")
     update_data = {k: v for k, v in route_update.dict().items() if v is not None}
     if "orders" in update_data:
         update_data["orders"] = [o.dict() if hasattr(o, 'dict') else o for o in update_data["orders"]]
@@ -251,6 +259,7 @@ class CacheCoordsItem(BaseModel):
     os_number: str
     lat: float
     lng: float
+    precision: Optional[str] = None
 
 class CacheCoordsRequest(BaseModel):
     coords: List[CacheCoordsItem]
@@ -270,14 +279,17 @@ async def _geocode_os(o: dict):
     key = os.environ.get('GOOGLE_MAPS_API_KEY', '')
     if not key or not o.get("address") or not o.get("city"):
         return None, "incomplete"
-    street = f"{o.get('address') or ''} {o.get('number') or ''}".strip()
-    addr = ", ".join(p for p in [street, o.get("neighborhood"), o.get("city"), o.get("state") or "MG", o.get("cep")] if p)
+    addr = _os_address(o)
     if addr in _geo_fail:
         return None, _geo_fail[addr]
+    cached = await _get_cached_geocode(get_db(), addr)
+    if cached and _valid_br(cached.get("lat"), cached.get("lng")):
+        return (float(cached["lat"]), float(cached["lng"])), "exact"
+    query = ", ".join(p for p in [addr, o.get("cep")] if p)
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get("https://maps.googleapis.com/maps/api/geocode/json",
-                            params={"address": addr, "components": "country:BR", "region": "br", "key": key})
+                            params={"address": query, "components": "country:BR", "region": "br", "key": key})
         res = (r.json().get("results") or [None])[0]
     except Exception as e:
         logger.warning(f"geocode {o.get('os_number')}: {e!r}")
@@ -289,7 +301,8 @@ async def _geocode_os(o: dict):
     types = {t for c in comps for t in c.get("types", [])}
     cities = {_norm(c.get("long_name")) for c in comps if {"administrative_area_level_2", "locality"} & set(c.get("types", []))}
     exact = (res.get("geometry", {}).get("location_type") in ("ROOFTOP", "RANGE_INTERPOLATED")
-             and "street_number" in types and _norm(o.get("city")) in cities)
+             and "street_number" in types and _norm(o.get("city")) in cities
+             and _valid_br(res["geometry"]["location"]["lat"], res["geometry"]["location"]["lng"]))
     if not exact:
         _geo_fail[addr] = "approximate"
         return None, "approximate"
@@ -315,14 +328,13 @@ async def get_cached_coords(req: GeocodeRequest):
     results = []
     missing = []
     for o in orders:
-        has_coords = o.get("lat") is not None and o.get("lng") is not None
+        has_coords = _valid_br(o.get("lat"), o.get("lng"))
         precision = "cached" if has_coords else None
 
         # If OS doesn't have coords, try the address-based cache
         if not has_coords:
-            full_address = f"{o.get('address', '')}, {o.get('number', '')}, {o.get('neighborhood', '')}, {o.get('city', '')}, {o.get('state', '')}"
-            cached = await _get_cached_geocode(db, full_address)
-            if cached:
+            cached = await _get_cached_geocode(db, _os_address(o))
+            if cached and _valid_br(cached.get("lat"), cached.get("lng")):
                 # Found in address cache! Update the OS record too
                 o["lat"] = cached["lat"]
                 o["lng"] = cached["lng"]
@@ -366,6 +378,9 @@ async def cache_coords(req: CacheCoordsRequest):
     db = get_db()
     updated = 0
     for item in req.coords:
+        # Só grava ponto validado (exato e dentro do Brasil).
+        if item.precision != "exact" or not _valid_br(item.lat, item.lng):
+            continue
         result = await db.service_orders.update_one(
             {"os_number": item.os_number},
             {"$set": {"lat": item.lat, "lng": item.lng}}
@@ -379,8 +394,7 @@ async def cache_coords(req: CacheCoordsRequest):
             {"_id": 0, "address": 1, "number": 1, "neighborhood": 1, "city": 1, "state": 1}
         )
         if os_data:
-            full_address = f"{os_data.get('address', '')}, {os_data.get('number', '')}, {os_data.get('neighborhood', '')}, {os_data.get('city', '')}, {os_data.get('state', '')}"
-            await _store_geocode_cache(db, full_address, item.lat, item.lng)
+            await _store_geocode_cache(db, _os_address(os_data), item.lat, item.lng)
 
     return {"updated": updated, "total": len(req.coords)}
 
@@ -395,9 +409,10 @@ class Waypoint(BaseModel):
 
 class ComputeRouteRequest(BaseModel):
     origin: Waypoint
-    destination: Waypoint
-    intermediates: List[Waypoint]
+    destination: Optional[Waypoint] = None
+    intermediates: List[Waypoint] = []
     optimize_waypoint_order: bool = False
+    round_trip: bool = False
 
 
 def _build_waypoint(wp: Waypoint):
@@ -416,13 +431,29 @@ async def compute_route(req: ComputeRouteRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY not configured")
 
+    inter = list(req.intermediates)
+    for wp in [req.origin, req.destination, *inter]:
+        if wp is None:
+            continue
+        if (wp.lat is None) != (wp.lng is None) or (wp.lat is not None and not _valid_br(wp.lat, wp.lng)):
+            raise HTTPException(status_code=400, detail=f"Coordenada inválida: {wp.lat},{wp.lng}")
+        if wp.lat is None and not (wp.address or "").strip():
+            raise HTTPException(status_code=400, detail="Parada sem coordenada e sem endereço")
+    dest = req.destination
+    same = dest is not None and dest.lat is not None and dest.lat == req.origin.lat and dest.lng == req.origin.lng
+    # Sem round_trip não assume ida e volta: a última parada vira o destino.
+    if not req.round_trip and (dest is None or same) and inter:
+        dest = inter.pop()
+    if dest is None:
+        raise HTTPException(status_code=400, detail="Informe o destino ou ao menos uma parada")
+
     body = {
         "origin": _build_waypoint(req.origin),
-        "destination": _build_waypoint(req.destination),
-        "intermediates": [_build_waypoint(wp) for wp in req.intermediates],
+        "destination": _build_waypoint(dest),
+        "intermediates": [_build_waypoint(wp) for wp in inter],
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE",
-        "optimizeWaypointOrder": req.optimize_waypoint_order,
+        "optimizeWaypointOrder": req.optimize_waypoint_order and len(inter) > 1,
         "languageCode": "pt-BR",
         "units": "METRIC",
     }
@@ -547,6 +578,8 @@ async def nav_leg(req: NavLegRequest):
             "encoded_polyline": (route0.get("polyline") or {}).get("encodedPolyline", ""),
             "distance_meters": route0.get("distanceMeters", 0),
             "duration_seconds": int(str(route0.get("duration", "0s")).rstrip("s") or 0),
+            # TRAFFIC_AWARE_OPTIMAL: `duration` já considera o trânsito.
+            "duration_in_traffic_seconds": int(str(route0.get("duration", "0s")).rstrip("s") or 0),
             "static_duration_seconds": int(str(route0.get("staticDuration", "0s")).rstrip("s") or 0),
             "speed_reading_intervals": (route0.get("travelAdvisory") or {}).get("speedReadingIntervals", []),
         }

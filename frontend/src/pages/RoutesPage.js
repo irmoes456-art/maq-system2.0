@@ -247,23 +247,19 @@ const TechnicianCombobox = ({ value, onChange, technicians, testId }) => {
 // === SHARED ADDRESS NORMALIZATION (module-level, accessible by all components) ===
 const normalizeAddressForMaps = (order, includeBairro = false) => {
   let addr = (order.address || '').replace(/\s+/g, ' ').trim();
-  addr = addr.replace(/\s*[Nn][ºo°.]\s*/g, ' ').trim();
-  addr = addr.replace(/\s*[Nn][Uuú][Mm][Ee][Rr][Oo]\s*/gi, ' ').trim();
-  addr = addr.replace(/\s*(APT|APTO|APART|APARTAMENTO|SALA|BL|BLOCO|COMP|COMPL|COMPLEMENTO|LOTE|LT|QUADRA|QD)\s*[.:]*\s*\S*/gi, '').trim();
-  addr = addr.replace(/\d{2}\.?\d{3}-?\d{3}/g, '').trim();
-  addr = addr.toLowerCase().replace(/\b\w/g, c => c.toUpperCase())
-    .replace(/\b(Da|De|Do|Das|Dos|E)\b/g, m => m.toLowerCase());
-  const rawNum = (order.number || '').replace(/\s*[Nn][ºo°.]\s*/g, '').replace(/\s*[Nn][Uuú][Mm][Ee][Rr][Oo]\s*/gi, '').trim();
-  const num = rawNum.replace(/[^\d]/g, '').trim();
-  const addrHasNum = num && addr.includes(num);
-  const street = addrHasNum ? addr : `${addr} ${num}`;
+  // Só palavras inteiras: não corta pedaços de nomes (Floriano, Alto, Blumenau).
+  addr = addr.replace(/(^|[\s,])(n\s*[º°.]|n[úu]mero)\s*/gi, '$1');
+  addr = addr.replace(/(^|[\s,])(apto?|apartamento|apart|sala|bloco|bl|complemento|compl|comp|lote|lt|quadra|qd)\.?[\s.:]*\d+[\w-]*/gi, '$1');
+  addr = addr.replace(/(^|\D)\d{2}\.?\d{3}-\d{3}(?!\d)/g, '$1');
+  addr = addr.replace(/\s+/g, ' ').replace(/[\s,;-]+$/, '').trim();
+  const num = String(order.number || '').replace(/\D/g, '');
+  // Número já presente só se estiver no fim do logradouro ("Rua 12 de Outubro" + 12 → acrescenta).
+  const addrHasNum = num && new RegExp(`(^|\\D)${num}$`).test(addr);
+  const street = num && !addrHasNum ? `${addr} ${num}` : addr;
   const city = (order.city || 'Belo Horizonte').trim();
   const state = (order.state || 'MG').trim();
-  if (includeBairro) {
-    const bairro = (order.neighborhood || '').trim();
-    return `${street}, ${bairro}, ${city}, ${state}`.replace(/\s+/g, ' ').replace(/, ,/g, ',').replace(/,\s*,/g, ',').trim();
-  }
-  return `${street}, ${city}, ${state}`.replace(/\s+/g, ' ').replace(/, ,/g, ',').replace(/,\s*,/g, ',').trim();
+  const bairro = includeBairro ? (order.neighborhood || '').trim() : '';
+  return [street, bairro, city, state].filter(Boolean).join(', ').replace(/\s+/g, ' ').trim();
 };
 
 // === ROUTE MAP DIALOG (split view: map + stops + live location) ===
@@ -274,6 +270,8 @@ const BASE_LNG = -43.9420748;
 const hasCoords = (o) => o != null && o.lat != null && o.lng != null && o.lat !== '' && o.lng !== ''
   && Number.isFinite(Number(o.lat)) && Number.isFinite(Number(o.lng));
 const MAX_ROUTE_OS = 9;
+// Mapa do roteiro: base → paradas (sem voltar para a base).
+const RETURN_TO_BASE = false;
 
 // Haversine distance in meters
 const haversine = (lat1, lng1, lat2, lng2) => {
@@ -597,8 +595,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   };
 
   const buildWaypoint = (order) => {
-    if (hasCoords(order)) return { lat: order.lat, lng: order.lng };
-    return { address: normalizeAddressForMaps(order) };
+    if (hasCoords(order)) return { lat: Number(order.lat), lng: Number(order.lng) };
+    return { address: normalizeAddressForMaps(order, true) };
   };
 
   const parseDuration = (durStr) => parseInt((durStr || '0').replace('s', ''), 10) || 0;
@@ -1351,7 +1349,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     }
 
     // Numbered stop markers with InfoWindows
-    for (let i = 0; i < legs.length - 1; i++) {
+    for (let i = 0; i < legs.length - (RETURN_TO_BASE ? 1 : 0); i++) {
       const el = legs[i].endLocation?.latLng;
       if (!el) continue;
       const os = sorted[i];
@@ -1387,7 +1385,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
     }
 
     // Return marker (red)
-    if (legs.length > 0) {
+    if (RETURN_TO_BASE && legs.length > 0) {
       const ll = legs[legs.length - 1].endLocation?.latLng;
       if (ll) {
         const marker = new window.google.maps.Marker({
@@ -1478,11 +1476,10 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
           } catch (_) { /* segue com o endereço */ }
         }
         const BASE_WP = { lat: BASE_LAT, lng: BASE_LNG };
-        const res = await axios.post(`${API}/routes/compute-route`, {
-          origin: BASE_WP, destination: BASE_WP,
-          intermediates: sorted.map(buildWaypoint),
-          optimize_waypoint_order: false,
-        }, auth);
+        const wps = sorted.map(buildWaypoint);
+        const res = await axios.post(`${API}/routes/compute-route`, RETURN_TO_BASE
+          ? { origin: BASE_WP, destination: BASE_WP, intermediates: wps, optimize_waypoint_order: false, round_trip: true }
+          : { origin: BASE_WP, destination: wps[wps.length - 1], intermediates: wps.slice(0, -1), optimize_waypoint_order: false }, auth);
         const route = res.data.routes?.[0];
         if (!route) throw new Error('Nenhuma rota encontrada');
         setRouteData({ route, sorted });
@@ -1526,6 +1523,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
   const sorted = routeData?.sorted || [];
   // Reordena a parada e devolve a lista com sequence 1..N (o pai salva no roteiro).
   const moveStop = (i, dir) => {
+    // Durante o recálculo a lista some (setRouteData(null)) — nunca salvar lista vazia.
+    if (loading || sorted.length < 2 || !sorted[i] || !sorted[i + dir]) return;
     const arr = [...sorted];
     [arr[i], arr[i + dir]] = [arr[i + dir], arr[i]];
     onReorder(arr.map((o, idx) => ({ ...o, sequence: idx + 1 })));
@@ -1666,8 +1665,8 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                   <div key={o.os_number} className={`flex items-start gap-2 px-2 py-2 rounded-lg border transition-colors group ${statusColors[status]}`} data-testid={`map-stop-${o.os_number}`}>
                     {onReorder && (
                       <div className="flex flex-col -my-1">
-                        <button disabled={i === 0} onClick={() => moveStop(i, -1)} className="text-sm sm:text-[10px] px-1 text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-up-${o.os_number}`}>▲</button>
-                        <button disabled={i === sorted.length - 1} onClick={() => moveStop(i, 1)} className="text-sm sm:text-[10px] px-1 text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-down-${o.os_number}`}>▼</button>
+                        <button disabled={loading || i === 0} onClick={() => moveStop(i, -1)} className="text-sm sm:text-[10px] px-1 text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-up-${o.os_number}`}>▲</button>
+                        <button disabled={loading || i === sorted.length - 1} onClick={() => moveStop(i, 1)} className="text-sm sm:text-[10px] px-1 text-gray-500 disabled:opacity-20 hover:text-blue-600" data-testid={`map-stop-down-${o.os_number}`}>▼</button>
                       </div>
                     )}
                     <div className={`w-6 h-6 rounded-full text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5 ${dotColors[status]}`}>
@@ -1803,6 +1802,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                 })}
 
                 {/* Return */}
+                {RETURN_TO_BASE && (
                 <div className="flex items-start gap-2 px-2 py-2 rounded-lg bg-red-50 border border-red-200">
                   <div className="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">B</div>
                   <div className="min-w-0">
@@ -1812,6 +1812,7 @@ const RouteMapDialog = ({ open, onClose, orders, routeName, token, routeId, user
                     )}
                   </div>
                 </div>
+                )}
               </div>
             </ScrollArea>
 
@@ -2822,6 +2823,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
         destination: BASE_WP,
         intermediates: waypointData.map(w => w.waypoint),
         optimize_waypoint_order: true,
+        round_trip: true,
       }, getAuthHeader());
 
       const route = routeRes.data.routes?.[0];
@@ -3755,12 +3757,20 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
   };
 
   const handleReorder = async (newOrders) => {
-    setOrders(newOrders);
+    if (!newOrders?.length) return;
+    const prev = orders;
+    const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+    const clean = newOrders.map(o => ({ ...o, lat: num(o.lat), lng: num(o.lng) }));
+    setOrders(clean);
     try {
-      await axios.put(`${API}/routes/${route.id}`, { orders: newOrders }, getAuthHeader());
+      await axios.put(`${API}/routes/${route.id}`, { orders: clean }, getAuthHeader());
       toast.success('Ordem do roteiro atualizada');
       onUpdated();
-    } catch { toast.error('Erro ao salvar nova ordem'); }
+    } catch (e) {
+      setOrders(prev);
+      const d = e?.response?.data?.detail;
+      toast.error(`Erro ao salvar nova ordem: ${Array.isArray(d) ? d.map(x => `${(x.loc || []).join('.')}: ${x.msg}`).join('; ') : (d || e.message)}`);
+    }
   };
 
   const handlePrint = () => {

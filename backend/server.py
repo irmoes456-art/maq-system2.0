@@ -2810,7 +2810,8 @@ async def run_background_sync(sync_id: str, days: int = 30):
                 total_synced += int(m.group(1))
                 total_updated += int(m.group(2))
             if code != 0 or not m or m.group(3) != "True":
-                all_errors.append(f"[{tag}] falhou (exit={code}); veja logs do backend")
+                tail = " | ".join(ln.strip() for ln in out.strip().splitlines()[-6:])[-600:]
+                all_errors.append(f"[{tag}] falhou (exit={code}): {tail}")
         
         total_in_db = await db.service_orders.count_documents({})
         

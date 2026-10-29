@@ -483,6 +483,14 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 
 
 
+### 2026-10-29 — Rotas (checklist do usuário), sync prod, mobile
+- Backend routes: `_os_address` única (cache/geocode/cache-coords), `_geocode_os` consulta cache antes do Google; `_valid_br`; /cache-coords só grava precision="exact"; /compute-route destination opcional + `round_trip` (sem ele, destino=origem → última parada vira destino), coords inválidas → 400, optimize só com >1 intermediária; update_route com orders=[] → 400; /nav-leg devolve duration_in_traffic_seconds; list_routes sem regex/limite 500 (filtra com _is_own).
+- `cleanup_geocodes.py` rodado (--apply): 35 entradas não validadas do geocode_cache apagadas, 146 roteiros com lat/lng por parada realinhados à OS (backup em backend/backups/).
+- Frontend: normalizeAddressForMaps reescrita (palavra inteira, número só no fim), RETURN_TO_BASE=false (mapa base→paradas, sem marcador/bloco "Retorno Base"), handleOptimize envia round_trip:true, setas bloqueadas durante recálculo, handleReorder limpa lat/lng e desfaz em erro mostrando o erro real.
+- Sync: scraper instala Chromium sozinho se faltar (prod); erros do sync_log agora trazem o fim da saída do script. Tabs da página de OSs roláveis no mobile.
+- WhatsApp: "Authorization Error" = system user sem permissão de envio na WABA (token válido, número CONNECTED, code 10 em business_profile). Ação do usuário na Meta.
+
+
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
 - Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.
 - Status "Visita Realizada" (front OS_STATUSES/cores + backend OS_STATUS_COLORS). PUT /routes/{id} com status "Concluído" → todas as OSs do roteiro viram "Visita Realizada".
