@@ -83,8 +83,8 @@ const Bubble = ({ m, onDecide }) => {
   );
 };
 
-const ConversationList = ({ convs, activeId, onSelect, onNew, onDelete }) => (
-  <aside className="hidden md:flex w-64 shrink-0 flex-col border-r border-gray-200 bg-white" data-testid="mi-conversation-list">
+const ConversationList = ({ convs, activeId, onSelect, onNew, onDelete, mobileOpen }) => (
+  <aside className={`${mobileOpen ? 'flex absolute inset-y-0 left-0 z-30 shadow-xl' : 'hidden'} md:static md:shadow-none md:flex w-64 shrink-0 flex-col border-r border-gray-200 bg-white`} data-testid="mi-conversation-list">
     <div className="p-3">
       <button onClick={onNew} className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-white text-sm font-medium transition-opacity hover:opacity-90" style={{ background: NAVY }} data-testid="mi-new-conversation-btn">
         <Plus size={16} /> Nova conversa
@@ -132,6 +132,7 @@ export default function MiPage() {
   const [attachment, setAttachment] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [histOpen, setHistOpen] = useState(false);
   const fileRef = useRef(null);
   const endRef = useRef(null);
 
@@ -208,10 +209,13 @@ export default function MiPage() {
 
   return (
     <DashboardLayout>
-      <div className="flex h-[calc(100vh-8rem)] lg:h-[calc(100vh-10rem)] rounded-xl border border-gray-200 overflow-hidden bg-gray-50" data-testid="mi-page">
-        <ConversationList convs={convs} activeId={activeId} onSelect={selectConv} onNew={newConv} onDelete={deleteConv} />
+      <div className="relative flex h-[calc(100vh-8rem)] lg:h-[calc(100vh-10rem)] rounded-xl border border-gray-200 overflow-hidden bg-gray-50" data-testid="mi-page">
+        {histOpen && <div className="md:hidden absolute inset-0 z-20 bg-black/30" onClick={() => setHistOpen(false)} data-testid="mi-history-backdrop" />}
+        <ConversationList convs={convs} activeId={activeId} mobileOpen={histOpen}
+          onSelect={(id) => { setHistOpen(false); selectConv(id); }} onNew={() => { setHistOpen(false); newConv(); }} onDelete={deleteConv} />
         <section className="flex-1 flex flex-col min-w-0">
-          <div className="md:hidden p-2 border-b border-gray-200 bg-white">
+          <div className="md:hidden p-2 border-b border-gray-200 bg-white flex items-center justify-between">
+            <button onClick={() => setHistOpen(o => !o)} className="flex items-center gap-1.5 text-xs font-medium px-2 py-1.5 rounded-md border border-gray-200" style={{ color: NAVY }} data-testid="mi-history-toggle-btn"><MessageSquare size={14} /> Histórico ({convs.length})</button>
             <button onClick={newConv} className="flex items-center gap-1 text-xs font-medium" style={{ color: NAVY }} data-testid="mi-new-conversation-mobile-btn"><Plus size={14} /> Nova conversa</button>
           </div>
           <div className="flex-1 overflow-y-auto px-4 py-6" data-testid="mi-messages">
