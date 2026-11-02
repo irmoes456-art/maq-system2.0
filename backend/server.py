@@ -3435,6 +3435,9 @@ api_router.include_router(routes_router)
 from tracking_module import router as tracking_router
 api_router.include_router(tracking_router)
 
+from rotaflow_module import router as rotaflow_router
+api_router.include_router(rotaflow_router)
+
 # Register manuais routes
 setup_manuais_routes(api_router, db, verify_token)
 setup_whatsapp_routes(api_router, db, verify_token)

@@ -301,7 +301,7 @@ async def _geocode_os(o: dict):
     types = {t for c in comps for t in c.get("types", [])}
     cities = {_norm(c.get("long_name")) for c in comps if {"administrative_area_level_2", "locality"} & set(c.get("types", []))}
     exact = (res.get("geometry", {}).get("location_type") in ("ROOFTOP", "RANGE_INTERPOLATED")
-             and "street_number" in types and _norm(o.get("city")) in cities
+             and "street_number" in types and _norm(str(o.get("city") or "").split("/")[0]) in cities
              and _valid_br(res["geometry"]["location"]["lat"], res["geometry"]["location"]["lng"]))
     if not exact:
         _geo_fail[addr] = "approximate"

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import DashboardLayout from '../components/DashboardLayout';
 import OrderDetailOverlay from '../components/OrderDetailOverlay';
+import { RotaFlowMap } from '../components/RotaFlowMap';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -3766,10 +3767,12 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
       await axios.put(`${API}/routes/${route.id}`, { orders: clean }, getAuthHeader());
       toast.success('Ordem do roteiro atualizada');
       onUpdated();
+      return true;
     } catch (e) {
       setOrders(prev);
       const d = e?.response?.data?.detail;
       toast.error(`Erro ao salvar nova ordem: ${Array.isArray(d) ? d.map(x => `${(x.loc || []).join('.')}: ${x.msg}`).join('; ') : (d || e.message)}`);
+      return false;
     }
   };
 
@@ -4044,16 +4047,15 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
             </Button>
           </div>
         </ScrollArea>
-        <RouteMapDialog
+        <RotaFlowMap
           open={showMapDialog}
           onClose={() => setShowMapDialog(false)}
           orders={orders}
           routeName={route.name || `Roteiro ${route.date}`}
-          token={token}
           routeId={route.id}
-          userRole={userRole}
           userName={userName}
-          onReorder={handleReorder}
+          onPersistOrders={handleReorder}
+          onViewOS={setQuickViewOS}
         />
       </DialogContent>
     </Dialog>

@@ -491,6 +491,13 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - WhatsApp: "Authorization Error" = system user sem permissão de envio na WABA (token válido, número CONNECTED, code 10 em business_profile). Ação do usuário na Meta.
 
 
+### 2026-11-02 — Mapa do roteiro = RotaFlow (Mapaflow)
+- Copiados do repo Mapaflow: components/map|nav|planner|layout, lib/geo|camera|mapsLoader, hooks useGps/useNavigator/useNavigationSession; backend maps_routes → `rotaflow_module.py` (prefixo /api/rf, auth do sistema, caches no Mongo rf_*, base fixa Rua Descalvado).
+- `usePlanner` reescrito para roteiro do sistema: paradas = OSs (+ avulsas no aparelho), ordem salva via PUT /routes/{id}; `/rf/os-stops` (coordenada exata > aproximada marcada), `/rf/os-search` (busca de OS no campo de parada).
+- `components/RotaFlowMap.js` substitui o "Ver Mapa" do ViewRouteModal (o da criação de roteiro continua o antigo). Extras do sistema: Ver OS, Google Maps/Waze por parada, Enviar roteiro p/ Google Maps, Compartilhar local, espelho do rastreio p/ admin (/tracking/*), aviso de OS sem ponto exato.
+- Tema: claro padrão Mastermaq (azul #1a3a8f, sem vermelho em botões) + escuro (toggle, salvo em localStorage). CSS em `src/rotaflow.css`.
+
+
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
 - Técnico não vê telefone do cliente nos modais de roteiro (criar/ver/editar) — `userRole !== 'technician'`.
 - Status "Visita Realizada" (front OS_STATUSES/cores + backend OS_STATUS_COLORS). PUT /routes/{id} com status "Concluído" → todas as OSs do roteiro viram "Visita Realizada".
