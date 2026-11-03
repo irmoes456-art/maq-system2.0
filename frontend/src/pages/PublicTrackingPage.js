@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
 import { Loader2, MapPin, Clock, Bike, AlertTriangle } from 'lucide-react';
+import '../rotaflow.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
 const API = `${BACKEND_URL}/api`;
@@ -31,6 +32,7 @@ export default function PublicTrackingPage() {
   const techMarkerRef = useRef(null);
   const customerMarkerRef = useRef(null);
   const polylineRef = useRef(null);
+  const outlineRef = useRef(null);
 
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: GOOGLE_MAPS_KEY,
@@ -123,8 +125,8 @@ export default function PublicTrackingPage() {
       // result). Falls back to a straight tech→customer line only if nav
       // path hasn't been published yet.
       const trafficKey = live.nav_traffic_color || 'normal';
-      const colorMap = { lightblue: '#1ec3ff', normal: '#4285F4', yellow: '#f59e0b', red: '#dc2626' };
-      const lineColor = colorMap[trafficKey] || '#4285F4';
+      const colorMap = { lightblue: '#3B82F6', normal: '#3B82F6', yellow: '#F59E0B', red: '#EF4444' };
+      const lineColor = colorMap[trafficKey] || '#3B82F6';
       const navPath = (live.nav_path && Array.isArray(live.nav_path) && live.nav_path.length > 1)
         ? live.nav_path
         : (osLat && osLng ? [{ lat: live.lat, lng: live.lng }, { lat: osLat, lng: osLng }] : null);
@@ -133,20 +135,22 @@ export default function PublicTrackingPage() {
           polylineRef.current = new google.maps.Polyline({
             map, path: navPath,
             strokeColor: lineColor,
-            strokeOpacity: 0.9,
-            strokeWeight: 6,
+            strokeOpacity: 1,
+            strokeWeight: 7,
+            zIndex: 3,
           });
-          // Glow underlayer for "GPS look"
-          new google.maps.Polyline({
+          // Contorno escuro estilo RotaFlow
+          outlineRef.current = new google.maps.Polyline({
             map, path: navPath,
-            strokeColor: lineColor,
-            strokeOpacity: 0.25,
-            strokeWeight: 14,
-            zIndex: 0,
+            strokeColor: '#1E3A8A',
+            strokeOpacity: 1,
+            strokeWeight: 11,
+            zIndex: 2,
           });
         } else {
           polylineRef.current.setPath(navPath);
           polylineRef.current.setOptions({ strokeColor: lineColor });
+          outlineRef.current?.setPath(navPath);
         }
       }
     }
@@ -188,12 +192,15 @@ export default function PublicTrackingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col" data-testid="public-tracking-page">
+    <div className="rf-root rf-light min-h-screen flex flex-col" data-testid="public-tracking-page">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b px-4 py-3 flex items-center justify-between">
-        <div>
-          <h1 className="text-sm sm:text-base font-semibold text-gray-900">Mastermaq Assistência Técnica</h1>
+      <header className="rf-glass m-3 mb-0 rounded-2xl px-4 py-3 flex items-center justify-between z-10">
+        <div className="flex items-center gap-2.5">
+          <div className="h-9 w-9 rounded-xl rf-brand grid place-items-center shrink-0"><Bike className="h-4 w-4 text-white" /></div>
+          <div>
+          <h1 className="text-sm sm:text-base font-extrabold text-gray-900 tracking-tight">Mastermaq Assistência Técnica</h1>
           <p className="text-[11px] text-gray-500">Acompanhamento em tempo real</p>
+          </div>
         </div>
         <div className="text-right">
           <p className="text-[11px] text-gray-500">OS Nº</p>
@@ -213,6 +220,10 @@ export default function PublicTrackingPage() {
               disableDefaultUI: true,
               zoomControl: true,
               gestureHandling: 'greedy',
+              mapId: process.env.REACT_APP_GOOGLE_MAP_ID || 'DEMO_MAP_ID',
+              renderingType: 'VECTOR',
+              tilt: 45,
+              clickableIcons: false,
             }}
           />
         ) : (
@@ -233,7 +244,7 @@ export default function PublicTrackingPage() {
       </div>
 
       {/* Bottom info card */}
-      <div className="bg-white border-t shadow-lg p-4 space-y-3" data-testid="public-info-card">
+      <div className="rf-glass-solid m-3 mt-0 rounded-3xl p-4 space-y-3" data-testid="public-info-card">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
             <Bike className="h-5 w-5 text-blue-700" />

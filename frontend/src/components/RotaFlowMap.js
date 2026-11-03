@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronLeft, ChevronRight, Eye, Map as MapIcon, Moon, Navigation, Send, Share2, Sun, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, Eye, Map as MapIcon, Moon, Navigation, Send, Share2, Sun, X } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { api, apiError, sysApi } from "@/lib/api";
 import { cameraForPoints, flyTo } from "@/lib/camera";
@@ -69,7 +70,7 @@ function Peek({ planner, onStart }) {
           </>
         ) : <p className="font-bold text-white truncate">{planner.loading ? "Calculando rota..." : `${planner.stops.length} paradas · calcule a rota`}</p>}
       </div>
-      {r && (
+      {r && onStart && (
         <button onClick={(e) => { e.stopPropagation(); onStart(); }} className="rf-btn-go h-11 px-5 rounded-2xl text-sm" data-testid="sheet-start-navigation-button">
           <Navigation className="h-4 w-4" fill="currentColor" />Iniciar
         </button>
@@ -81,25 +82,94 @@ function Peek({ planner, onStart }) {
 function useAdminMirror(session, routeId, userName, stops) {
   const last = useRef(0);
   const was = useRef(false);
+  const sentLeg = useRef(null);
+  const chan = useRef(null);
+  useEffect(() => {
+    if (!supabase || !routeId) return undefined;
+    chan.current = supabase.channel(`tracking-${routeId}`).subscribe();
+    return () => { supabase.removeChannel(chan.current); chan.current = null; };
+  }, [routeId]);
   useEffect(() => {
     if (session.active && !was.current) sysApi.post("/tracking/session/start", { route_id: routeId, technician_name: userName || "" }).catch(() => {});
-    if (!session.active && was.current) sysApi.post("/tracking/session/stop", { route_id: routeId }).catch(() => {});
+    if (!session.active && was.current) {
+      sysApi.post("/tracking/session/stop", { route_id: routeId }).catch(() => {});
+      chan.current?.send({ type: "broadcast", event: "end", payload: {} });
+    }
     was.current = session.active;
   }, [session.active, routeId, userName]);
   useEffect(() => {
     const d = session.nav?.display;
-    if (!session.active || !d || Date.now() - last.current < 5000) return;
-    last.current = Date.now();
+    if (!session.active || !d) return;
     const os = stops.find((s) => s.id === session.targetKey)?.os_number || null;
-    sysApi.post("/tracking/gps", { route_id: routeId, lat: d.lat, lng: d.lng, heading: session.nav.heading || 0, speed: 0, technician: userName || "", active_os: os, active_status: "in_transit" }).catch(() => {});
-  }, [session.active, session.nav, session.targetKey, routeId, userName, stops]);
+    const live = { route_id: routeId, lat: d.lat, lng: d.lng, heading: session.nav.heading || 0, speed: 0, technician: userName || "", active_os: os, active_status: "in_transit" };
+    chan.current?.send({ type: "broadcast", event: "gps", payload: live });
+    const newLeg = session.leg && sentLeg.current !== session.leg;
+    if (!newLeg && Date.now() - last.current < 5000) return;
+    last.current = Date.now();
+    const body = { ...live };
+    if (newLeg) {
+      sentLeg.current = session.leg;
+      const pts = session.legPath?.points || [];
+      const step = Math.max(1, Math.ceil(pts.length / 300));
+      body.nav_path = pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map((p) => ({ lat: p.lat, lng: p.lng }));
+      body.nav_distance_meters = Math.round(session.leg.distance_m || 0);
+      body.nav_duration_in_traffic_seconds = Math.round(session.leg.duration_s || 0);
+      body.nav_destination_lat = session.target?.lat;
+      body.nav_destination_lng = session.target?.lng;
+      chan.current?.send({ type: "broadcast", event: "nav", payload: body });
+    }
+    sysApi.post("/tracking/gps", body).catch(() => {});
+  }, [session.active, session.nav, session.leg, session.legPath, session.target, session.targetKey, routeId, userName, stops]);
 }
 
-function Workspace({ config, routeId, routeName, orders, onPersistOrders, onViewOS, onClose, userName, dark, setDark }) {
+// Admin: só acompanha o técnico (posição + trajeto atual) em tempo real.
+function useLiveTech(map, routeId, enabled) {
+  const [live, setLive] = useState(null);
+  const line = useRef(null);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const apply = (p) => setLive((prev) => (p?.active === false ? null : { ...(prev || {}), ...p }));
+    const poll = () => sysApi.get(`/tracking/live/${routeId}`).then((r) => r.data && apply(r.data)).catch(() => {});
+    poll();
+    const t = setInterval(poll, 10000);
+    const ch = supabase?.channel(`tracking-${routeId}`)
+      .on("broadcast", { event: "gps" }, ({ payload }) => apply({ ...payload, active: true }))
+      .on("broadcast", { event: "nav" }, ({ payload }) => apply(payload))
+      .on("broadcast", { event: "end" }, () => apply({ active: false }))
+      .subscribe();
+    return () => { clearInterval(t); if (ch) supabase.removeChannel(ch); };
+  }, [routeId, enabled]);
+  useEffect(() => {
+    if (!map || !enabled) return;
+    const path = live?.nav_path?.length > 1 ? live.nav_path : null;
+    if (!path) { line.current?.setMap(null); line.current = null; return; }
+    if (!line.current) line.current = new window.google.maps.Polyline({ map, strokeColor: "#3B82F6", strokeWeight: 7, strokeOpacity: 0.95, zIndex: 3 });
+    line.current.setPath(path);
+  }, [map, live?.nav_path, enabled]);
+  useEffect(() => () => line.current?.setMap(null), []);
+  return live && live.lat != null ? { lat: Number(live.lat), lng: Number(live.lng), heading: live.heading || 0 } : null;
+}
+
+const etaMsg = (o, technician, seconds) => {
+  const t = new Date(Date.now() + seconds * 1000);
+  const hhmm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+  const addr = `${o.address || ""} ${o.number || ""}, ${o.neighborhood || ""} - ${o.city || ""}`.trim();
+  return `Olá, *Mastermaq Assistência Técnica Serviço Autorizado*, informa que o técnico *${technician || ""}* chegará ao destino às *${hhmm}*.\n\nOS ${o.os_number} - ${o.customer_name || ""}\n${addr}\n${o.phone1 || ""} *Caso o seu produto se enquadre em uma das seguintes categorias — ar-condicionado, geladeira, frigobar, cervejeira, freezer ou máquina de gelo —, favor mantê-lo ligado até a chegada do técnico.*`;
+};
+const sendEta = (stop, technician, seconds) => {
+  const o = { ...(stop.order || {}), ...stop };
+  const phone = String(o.phone1 || "").replace(/\D/g, "");
+  if (!phone) { toast.error(`OS ${o.os_number} sem telefone`); return; }
+  if (!seconds) { toast.error("Sem previsão: calcule a rota primeiro."); return; }
+  window.open(`https://wa.me/${phone.startsWith("55") ? phone : `55${phone}`}?text=${encodeURIComponent(etaMsg(o, technician, seconds))}`, "_blank");
+};
+
+function Workspace({ config, routeId, routeName, orders, onPersistOrders, onViewOS, onClose, userName, technician, isAdmin, dark, setDark }) {
   const base = config.base;
   const isDesktop = useMedia("(min-width: 1024px)");
   const [map, setMap] = useState(null);
-  const planner = usePlanner(base, { routeId, routeName, orders, onPersistOrders });
+  const planner0 = usePlanner(base, { routeId, routeName, orders, onPersistOrders: isAdmin ? null : onPersistOrders });
+  const planner = isAdmin ? { ...planner0, reorder: () => {}, removeStop: () => {}, addStop: () => false, toggleReturn: () => {} } : planner0;
   const { setStopStatus } = planner;
   const completeStop = useCallback((id) => setStopStatus(id, true), [setStopStatus]);
   const session = useNavigationSession({ base, stops: planner.stops.filter((s) => s.lat != null), returnToBase: planner.returnToBase, ensureSaved: planner.ensureSaved, completeStop });
@@ -113,11 +183,21 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
   const trafficLayer = useRef(null);
   const navStarted = useRef(false);
   useAdminMirror(session, routeId, userName, planner.stops);
+  const liveTech = useLiveTech(map, routeId, isAdmin);
+  // ETA (s) até cada parada pela rota calculada: soma dos trechos.
+  const etaById = useMemo(() => {
+    const r = !planner.stale && planner.routes[planner.selectedRoute];
+    if (!r) return {};
+    let acc = 0;
+    const out = {};
+    planner.stops.filter((s) => s.lat != null).forEach((s, i) => { acc += r.legs[i]?.duration_s || 0; out[s.id] = acc; });
+    return out;
+  }, [planner.routes, planner.selectedRoute, planner.stale, planner.stops]);
 
   useEffect(() => {
     const st = Object.fromEntries(planner.stops.filter((s) => s.os_number).map((s) => [s.os_number, s.status === "concluida" ? "completed" : "pending"]));
-    if (Object.keys(st).length) sysApi.post("/tracking/session/stop-statuses", { route_id: routeId, stop_statuses: st }).catch(() => {});
-  }, [planner.stops, routeId]);
+    if (!isAdmin && Object.keys(st).length) sysApi.post("/tracking/session/stop-statuses", { route_id: routeId, stop_statuses: st }).catch(() => {});
+  }, [planner.stops, routeId, isAdmin]);
 
   const pad = useCallback(() => (isDesktop
     ? { top: 80, right: 110, bottom: 80, left: sidebarOpen ? 470 : 90 }
@@ -168,8 +248,8 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
 
   const vehicle = useMemo(() => {
     if (session.active) return session.nav ? { ...session.nav.display, heading: session.nav.heading } : null;
-    return myLoc;
-  }, [session.active, session.nav, myLoc]);
+    return isAdmin ? liveTech : myLoc;
+  }, [session.active, session.nav, myLoc, isAdmin, liveTech]);
 
   const located = useMemo(() => planner.stops.filter((s) => s.lat != null), [planner.stops]);
   const lc = planner.legCompare;
@@ -228,12 +308,20 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
       )}
       <a href={dirUrl || "#"} target="_blank" rel="noreferrer" onClick={(e) => !dirUrl && e.preventDefault()}
         className="rf-btn-ghost w-full h-11 rounded-xl text-sm" data-testid="rf-send-maps-button"><Send className="h-4 w-4" />Enviar roteiro para o Google Maps</a>
+      {isAdmin && (
+        <>
+          <button onClick={() => dirUrl && window.open(`https://wa.me/?text=${encodeURIComponent(`Roteiro ${routeName}${technician ? ` — técnico ${technician}` : ""}:\n${dirUrl}`)}`, "_blank")}
+            className="rf-btn-primary w-full h-11 rounded-xl text-sm" data-testid="rf-share-route-button"><Share2 className="h-4 w-4" />Compartilhar rota</button>
+          <p className="text-xs text-slate-400 text-center" data-testid="rf-live-status">{liveTech ? "Técnico em deslocamento — posição ao vivo no mapa" : "Aguardando o técnico iniciar a navegação"}</p>
+        </>
+      )}
     </div>
   );
   const stopExtra = (s) => (
     <div className="grid grid-cols-2 gap-2 mt-2">
       {s.os_number && <button onClick={() => onViewOS?.(s.os_number)} className="rf-btn-ghost h-10 rounded-xl text-xs" data-testid="stop-view-os-button"><Eye className="h-4 w-4" />Ver OS</button>}
-      {s.os_number && <button onClick={() => share(s)} className="rf-btn-ghost h-10 rounded-xl text-xs" data-testid="stop-share-location-button"><Share2 className="h-4 w-4" />Compartilhar local</button>}
+      {s.os_number && <button onClick={() => sendEta(s, technician, etaById[s.id])} className="rf-btn-ghost h-10 rounded-xl text-xs" data-testid="stop-send-eta-button"><Clock className="h-4 w-4" />Enviar previsão</button>}
+      {s.os_number && !isAdmin && <button onClick={() => share(s)} className="rf-btn-ghost h-10 rounded-xl text-xs" data-testid="stop-share-location-button"><Share2 className="h-4 w-4" />Compartilhar local</button>}
       <a href={mapsUrl(s)} target="_blank" rel="noreferrer" className="rf-btn-ghost h-10 rounded-xl text-xs" data-testid="stop-gmaps-button"><MapIcon className="h-4 w-4" />Google Maps</a>
       <a href={wazeUrl(s)} target="_blank" rel="noreferrer" className="rf-btn-ghost h-10 rounded-xl text-xs" data-testid="stop-waze-button"><Navigation className="h-4 w-4" />Waze</a>
     </div>
@@ -242,11 +330,11 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
   const header = <Header name={routeName} dark={dark} setDark={setDark} onClose={onClose} />;
   const panel = (
     <PlannerPanel planner={{ ...planner, hideSaved: true }} base={base} selectedId={selectedId} setSelectedId={setSelectedId}
-      onStartNav={startNav} gpsMode={session.gpsMode} setGpsMode={session.setGpsMode} header={isDesktop ? header : null} extra={extra} stopExtra={stopExtra} />
+      onStartNav={isAdmin ? () => toast.error("Só o técnico inicia a navegação.") : startNav} gpsMode={session.gpsMode} setGpsMode={session.setGpsMode} header={isDesktop ? header : null} extra={extra} stopExtra={stopExtra} />
   );
 
   return (
-    <div className="relative h-full w-full overflow-hidden rf-surface" data-testid="map-workspace">
+    <div className={`relative h-full w-full overflow-hidden rf-surface ${isAdmin ? "rf-readonly" : ""}`} data-testid="map-workspace">
       <MapCanvas config={{ ...config, dark }} onReady={setMap} />
       <AnimatePresence>
         {!session.active && isDesktop && sidebarOpen && (
@@ -266,20 +354,25 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
       {!session.active && !isDesktop && (
         <>
           <div className="absolute top-3 left-3 right-16 z-20 rf-glass rounded-2xl px-3 py-2">{header}</div>
-          <MobileSheet snap={snap} setSnap={setSnap} peek={<Peek planner={planner} onStart={() => startNav()} />}>{panel}</MobileSheet>
+          <MobileSheet snap={snap} setSnap={setSnap} peek={<Peek planner={planner} onStart={isAdmin ? null : () => startNav()} />}>{panel}</MobileSheet>
         </>
       )}
       <MapControls map={map} satellite={satellite} setSatellite={setSatellite} traffic={traffic} setTraffic={setTraffic}
         onRecenter={recenter} following={follow && session.active}
         className={`absolute z-20 ${session.active ? "right-3 sm:right-5 top-[38%]" : isDesktop ? "right-5 bottom-8" : "right-3 top-3"}`} />
       <AnimatePresence>
-        {session.active && <NavigationHUD session={session} following={follow} onOverview={navOverview} onRecenter={recenter} />}
+        {session.active && <NavigationHUD session={session} following={follow} onOverview={navOverview} onRecenter={recenter}
+          onSendEta={() => {
+            const s = planner.stops.find((x) => x.id === session.targetKey);
+            if (!s?.os_number) { toast.error("Esta parada não é uma OS."); return; }
+            sendEta(s, technician || userName, session.nav?.remainingS);
+          }} />}
       </AnimatePresence>
     </div>
   );
 }
 
-export function RotaFlowMap({ open, onClose, routeId, routeName, orders, onPersistOrders, onViewOS, userName }) {
+export function RotaFlowMap({ open, onClose, routeId, routeName, orders, onPersistOrders, onViewOS, userName, userRole, technician }) {
   const [config, setConfig] = useState(null);
   const [error, setError] = useState(null);
   const [dark, setDark] = useState(() => localStorage.getItem("rf-theme") === "dark");
@@ -295,7 +388,7 @@ export function RotaFlowMap({ open, onClose, routeId, routeName, orders, onPersi
         {error ? <div className="h-full grid place-items-center text-sm text-slate-400 rf-surface">{error}</div>
           : !config ? <div className="h-full grid place-items-center rf-surface"><div className="rf-spinner" /></div>
             : <Workspace key={dark ? "d" : "l"} config={config} routeId={routeId} routeName={routeName} orders={orders} onPersistOrders={onPersistOrders}
-              onViewOS={onViewOS} onClose={onClose} userName={userName} dark={dark} setDark={setDark} />}
+              onViewOS={onViewOS} onClose={onClose} userName={userName} technician={technician} isAdmin={userRole !== "technician"} dark={dark} setDark={setDark} />}
       </DialogContent>
     </Dialog>
   );

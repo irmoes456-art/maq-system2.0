@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { haversine, projectOnPath } from "@/lib/geo";
 
 const ARRIVE_M = 25;
-const OFF_CONFIRM = 3;
+const OFF_CONFIRM = 2;
 
 export function useNavigator(legPath, leg, fix) {
   const [state, setState] = useState(null);
@@ -33,7 +33,7 @@ export function useNavigator(legPath, leg, fix) {
     if (!legPath || !leg || !fix) return;
     const pr = projectOnPath(legPath, fix, hint.current);
     if (!pr) return;
-    const tol = Math.max(35, Math.min(fix.accuracy || 0, 60) * 1.2);
+    const tol = Math.max(28, Math.min(fix.accuracy || 0, 50) * 1.2);
     const onRoute = pr.offset <= tol;
     if (onRoute) {
       hint.current = pr.seg;

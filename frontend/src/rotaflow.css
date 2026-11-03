@@ -211,6 +211,28 @@
 .rf-light .rf-banner, .rf-light .rf-banner .text-white, .rf-light .rf-banner [class*="text-slate"], .rf-light .rf-brand .text-white,
 .rf-light .rf-btn-primary, .rf-light .rf-btn-go, .rf-light .rf-ctl-active, .rf-light .rf-stop-num, .rf-light .rf-os-badge { color: #fff; }
 
+/* Admin: somente acompanhamento (sem editar/navegar) */
+.rf-readonly [data-testid="search-stop-input"], .rf-readonly [data-testid="search-geocode-button"], .rf-readonly [data-testid^="stop-drag-handle-"],
+.rf-readonly [data-testid^="stop-remove-button-"], .rf-readonly [data-testid="stop-details-remove-button"], .rf-readonly [data-testid="stop-navigate-button"],
+.rf-readonly [data-testid="stop-toggle-done-button"], .rf-readonly [data-testid="optimize-route-button"], .rf-readonly [data-testid="calculate-route-button"],
+.rf-readonly [data-testid="return-to-base-switch"], .rf-readonly [data-testid="start-navigation-panel"], .rf-readonly [data-testid="start-navigation-button"],
+.rf-readonly [data-testid="gps-mode-device"], .rf-readonly [data-testid="gps-mode-sim"] { display: none !important; }
+.rf-readonly .rf-field:has([data-testid="search-stop-input"]) { display: none; }
+
+/* Celular deitado: HUD estreito \u00e0 esquerda, faixa de manobra menor (n\u00e3o cobre a rota/seta) */
+@media (orientation: landscape) and (max-height: 540px) {
+  .rf-hud-top, .rf-hud-bottom { max-width: 290px !important; }
+  .rf-hud-top .rf-banner { padding: .5rem .7rem; gap: .6rem; border-radius: 1rem; }
+  .rf-hud-top .rf-banner svg { height: 1.6rem; width: 1.6rem; }
+  .rf-hud-top [data-testid="maneuver-distance"] { font-size: 1.05rem; }
+  .rf-hud-top [data-testid="maneuver-instruction"] { font-size: .8rem; margin-top: .1rem; -webkit-line-clamp: 1; }
+  .rf-hud-top .rf-banner-then, .rf-hud-top .rf-banner-note { font-size: .7rem; padding: .25rem .6rem; }
+  .rf-hud-bottom .rf-navbar { padding: .55rem .7rem; border-radius: 1.1rem; }
+  .rf-hud-bottom [data-testid="nav-remaining-time"] { font-size: 1.15rem; }
+  .rf-hud-bottom .rf-round { height: 2.4rem; width: 2.4rem; }
+  .rf-hud-bottom .rf-pill { padding: .3rem .6rem; font-size: .7rem; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rf-pin, .rf-vehicle-halo, .rf-pulse, .rf-map-skeleton-grid { animation: none; }
 }

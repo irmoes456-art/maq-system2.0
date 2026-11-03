@@ -4054,6 +4054,8 @@ const ViewRouteModal = ({ open, onClose, route, token, onUpdated, technicianName
           routeName={route.name || `Roteiro ${route.date}`}
           routeId={route.id}
           userName={userName}
+          userRole={userRole}
+          technician={route.technician}
           onPersistOrders={handleReorder}
           onViewOS={setQuickViewOS}
         />
