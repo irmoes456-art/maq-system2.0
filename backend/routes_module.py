@@ -181,7 +181,7 @@ async def create_route(route_data: RouteCreate, payload: dict = Depends(verify_t
 @router.put("/{route_id}")
 async def update_route(route_id: str, route_update: RouteUpdate, payload: dict = Depends(verify_token)):
     db = get_db()
-    await _own_route(db, route_id, payload)
+    old_route = await _own_route(db, route_id, payload)
     if route_update.technician is not None and not _is_own(route_update.technician, payload):
         raise HTTPException(status_code=403, detail="Técnico não pode passar o roteiro para outro técnico")
     if route_update.orders is not None and len(route_update.orders) == 0:
@@ -194,6 +194,13 @@ async def update_route(route_id: str, route_update: RouteUpdate, payload: dict =
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Route not found")
     route = await db.routes.find_one({"id": route_id}, {"_id": 0})
+    if "orders" in update_data:
+        # OS (re)incluída no roteiro volta a aparecer no mapa mesmo se antes foi removida lá.
+        old = {str(o.get("os_number")) for o in (old_route or {}).get("orders") or []}
+        added = [f"os-{o.get('os_number')}" for o in update_data["orders"] if str(o.get("os_number")) not in old]
+        if added:
+            from server import mongo_db
+            await mongo_db["route_map_state"].update_one({"route_id": route_id}, {"$pull": {"removed": {"$in": added}}})
     # Roteiro concluído → todas as OSs dele viram "Visita Realizada".
     if update_data.get("status") == "Concluído":
         for o in route.get("orders") or []:

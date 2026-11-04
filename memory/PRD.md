@@ -515,6 +515,12 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - nav-leg: limite 8→20/min (evitava recálculos em sequência). Tempo medido do servidor: ~0,1–0,2s.
 - Usuários: botão olho no campo Senha (user-form-password-toggle).
 
+### 2026-11-04 — Badge no link, recálculo 2s, OS reincluída
+- /track: badge inferior com horário previsto, minutos e km restantes (calculados pela rota real do técnico) e endereço (rua, bairro, cidade — sem número).
+- Recálculo após desvio: intervalo mínimo 4s→2s; limite nav-leg 20→40/min.
+- update_route: OS que entra no roteiro sai da lista "removidas" do mapa (route_map_state.removed), voltando a aparecer.
+
+
 
 
 

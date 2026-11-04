@@ -5,7 +5,7 @@ import { buildPath, decodePolyline, fmtDist } from "@/lib/geo";
 import { useGpsSource } from "@/hooks/useGpsSource";
 import { useNavigator } from "@/hooks/useNavigator";
 
-const REROUTE_COOLDOWN_MS = 4000;
+const REROUTE_COOLDOWN_MS = 2000;
 
 function speak(text) {
   if (!("speechSynthesis" in window) || !text) return;

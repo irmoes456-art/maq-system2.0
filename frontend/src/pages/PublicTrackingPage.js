@@ -1,15 +1,48 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Clock, MapPin } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { cameraForPoints, flyTo } from '@/lib/camera';
+import { fmtDist, haversine } from '@/lib/geo';
 import { MapCanvas } from '@/components/map/MapCanvas';
 import { useStopMarkers, useVehicleMarker } from '@/components/map/useMapOverlays';
 import '../rotaflow.css';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const noop = () => {};
+
+// Restante pela rota real: do ponto da rota mais próximo do técnico até o fim; tempo proporcional ao trecho.
+function remaining(live, path) {
+  if (!live || !path || live.lat == null) return null;
+  const v = { lat: Number(live.lat), lng: Number(live.lng) };
+  let near = 0, best = Infinity;
+  path.forEach((p, i) => { const d = haversine(v, p); if (d < best) { best = d; near = i; } });
+  let rest = 0, total = 0;
+  for (let i = 1; i < path.length; i++) { const d = haversine(path[i - 1], path[i]); total += d; if (i > near) rest += d; }
+  const dur = live.nav_duration_in_traffic_seconds || live.nav_duration_seconds;
+  return { meters: rest, seconds: dur && total ? dur * (rest / total) : null };
+}
+
+function EtaBadge({ os, live, path }) {
+  const r = remaining(live, path);
+  const addr = [os?.address?.trim(), os?.neighborhood, os?.city].filter(Boolean).join(', ');
+  const at = r?.seconds != null ? new Date(Date.now() + r.seconds * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null;
+  return (
+    <div className="absolute left-3 right-3 bottom-4 z-10 rf-glass rounded-2xl px-4 py-3 sm:left-5 sm:right-auto sm:max-w-sm" data-testid="public-eta-badge">
+      {r ? (
+        <div className="flex items-baseline gap-3">
+          <Clock className="h-4 w-4 text-blue-500 self-center" />
+          <p className="font-mono text-xl font-bold text-white leading-none" data-testid="public-eta-time">{at || '--:--'}</p>
+          <p className="text-xs text-slate-400 font-mono" data-testid="public-eta-distance">
+            {r.seconds != null ? `${Math.max(1, Math.round(r.seconds / 60))} min · ` : ''}{fmtDist(r.meters)}
+          </p>
+        </div>
+      ) : <p className="text-sm font-semibold text-white" data-testid="public-eta-waiting">Aguardando o técnico iniciar o deslocamento</p>}
+      <p className="mt-1.5 text-xs text-slate-400 flex items-start gap-1.5" data-testid="public-eta-address"><MapPin className="h-3.5 w-3.5 shrink-0 mt-0.5" />{addr}</p>
+    </div>
+  );
+}
 
 // Link do consumidor: mesmo mapa RotaFlow do técnico, só a rota ao vivo até a OS (sem badges/botões/pop-ups).
 function useLegLine(map, path) {
@@ -48,7 +81,12 @@ function TrackMap({ data, live }) {
     fitted.current = true;
     flyTo(map, cameraForPoints(map, pts, { top: 60, right: 40, bottom: 60, left: 40 }), 1200);
   }, [map, path, vehicle, dest]);
-  return <MapCanvas config={config} onReady={setMap} />;
+  return (
+    <>
+      <MapCanvas config={config} onReady={setMap} />
+      <EtaBadge os={data.os} live={sameOs ? live : null} path={path} />
+    </>
+  );
 }
 
 export default function PublicTrackingPage() {
