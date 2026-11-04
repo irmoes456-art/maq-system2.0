@@ -93,7 +93,7 @@ class GPSUpdate(BaseModel):
 
 class ShareTokenRequest(BaseModel):
     route_id: str
-    os_number: str
+    os_number: Optional[str] = None
 
 
 # ─── Existing simple endpoints ──────────────────────────────────
@@ -350,11 +350,20 @@ async def create_share_token(body: ShareTokenRequest, _: dict = Depends(verify_t
     route = await db.routes.find_one({"id": body.route_id}, {"_id": 0})
     if not route:
         raise HTTPException(status_code=404, detail="Roteiro não encontrado")
-    if not any(str(o.get("os_number")) == str(body.os_number) for o in (route.get("orders") or [])):
-        raise HTTPException(status_code=400, detail="OS não pertence a este roteiro")
+    orders = [o for o in (route.get("orders") or []) if o.get("os_number")]
+    if body.os_number:
+        target = next((o for o in orders if str(o.get("os_number")) == str(body.os_number)), None)
+        if not target:
+            raise HTTPException(status_code=400, detail="OS não pertence a este roteiro")
+    else:
+        target = next((o for o in orders if o.get("stop_status") != "completed"), None)
+        if not target:
+            raise HTTPException(status_code=400, detail="Todas as OSs deste roteiro já foram concluídas")
+    if target.get("stop_status") == "completed":
+        raise HTTPException(status_code=400, detail="Esta OS já foi concluída")
     payload = {
         "route_id": body.route_id,
-        "os_number": str(body.os_number),
+        "os_number": str(target.get("os_number")),
         "iss": "mastermaq-tracking",
         "exp": datetime.now(timezone.utc) + timedelta(hours=SHARE_TOKEN_TTL_HOURS),
     }
@@ -362,6 +371,9 @@ async def create_share_token(body: ShareTokenRequest, _: dict = Depends(verify_t
     return {
         "token": token,
         "expires_in_hours": SHARE_TOKEN_TTL_HOURS,
+        "os_number": str(target.get("os_number")),
+        "customer_name": target.get("customer_name") or "",
+        "phone": target.get("phone1") or "",
     }
 
 
@@ -392,6 +404,8 @@ async def public_tracking(token: str):
             break
     if not target_order:
         raise HTTPException(status_code=404, detail="OS não encontrada")
+    if target_order.get("stop_status") == "completed":
+        raise HTTPException(status_code=410, detail="Atendimento concluído")
 
     from server import mongo_db
     live = await mongo_db["tracking_live"].find_one({"route_id": route_id}, {"_id": 0})
@@ -407,6 +421,11 @@ async def public_tracking(token: str):
         "lat": target_order.get("lat"),
         "lng": target_order.get("lng"),
     }
+    if safe_order["lat"] is None:
+        from routes_module import _geocode_os
+        pt, _ = await _geocode_os(target_order)
+        if pt:
+            safe_order["lat"], safe_order["lng"] = pt
 
     response = {
         "os": safe_order,

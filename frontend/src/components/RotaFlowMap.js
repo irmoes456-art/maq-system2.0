@@ -169,7 +169,13 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
   const isDesktop = useMedia("(min-width: 1024px)");
   const [map, setMap] = useState(null);
   const planner0 = usePlanner(base, { routeId, routeName, orders, onPersistOrders: isAdmin ? null : onPersistOrders });
-  const planner = isAdmin ? { ...planner0, reorder: () => {}, removeStop: () => {}, addStop: () => false, toggleReturn: () => {} } : planner0;
+  const { setStopStatus: setStatus0, stops: stops0 } = planner0;
+  const setStopStatusSynced = useCallback((id, done) => {
+    setStatus0(id, done);
+    const s = stops0.find((x) => x.id === id);
+    if (s?.os_number) sysApi.post("/tracking/stop-status", { route_id: routeId, os_number: String(s.os_number), status: done ? "completed" : "pending" }).catch(() => {});
+  }, [setStatus0, stops0, routeId]);
+  const planner = isAdmin ? { ...planner0, reorder: () => {}, removeStop: () => {}, addStop: () => false, toggleReturn: () => {} } : { ...planner0, setStopStatus: setStopStatusSynced };
   const { setStopStatus } = planner;
   const completeStop = useCallback((id) => setStopStatus(id, true), [setStopStatus]);
   const session = useNavigationSession({ base, stops: planner.stops.filter((s) => s.lat != null), returnToBase: planner.returnToBase, ensureSaved: planner.ensureSaved, completeStop });
@@ -287,13 +293,16 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
 
   const startNav = (key) => { setSelectedId(null); setSnap("peek"); session.start(key); };
 
+  // Sem OS: o backend escolhe a próxima OS não concluída do roteiro.
   const share = async (s) => {
     try {
-      const { data } = await sysApi.post("/tracking/share-token", { route_id: routeId, os_number: s.os_number });
+      const { data } = await sysApi.post("/tracking/share-token", { route_id: routeId, os_number: s?.os_number ? String(s.os_number) : null });
       const url = `${window.location.origin}/track/${data.token}`;
-      window.open(`https://wa.me/?text=${encodeURIComponent(`Olá! Acompanhe a chegada do técnico em tempo real: ${url}`)}`, "_blank");
+      const phone = String(data.phone || "").replace(/\D/g, "");
+      const text = `Olá${data.customer_name ? `, ${data.customer_name}` : ""}! A *Mastermaq Assistência Técnica* informa que o técnico está a caminho (OS ${data.os_number}). Acompanhe o trajeto em tempo real: ${url}`;
+      window.open(`https://wa.me/${phone ? (phone.startsWith("55") ? phone : `55${phone}`) : ""}?text=${encodeURIComponent(text)}`, "_blank");
       navigator.clipboard?.writeText(url).catch(() => {});
-      toast.success("Link copiado e WhatsApp aberto");
+      toast.success(`Link da OS ${data.os_number} copiado e WhatsApp aberto`);
     } catch (e) { toast.error(apiError(e)); }
   };
 
@@ -310,7 +319,7 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
         className="rf-btn-ghost w-full h-11 rounded-xl text-sm" data-testid="rf-send-maps-button"><Send className="h-4 w-4" />Enviar roteiro para o Google Maps</a>
       {isAdmin && (
         <>
-          <button onClick={() => dirUrl && window.open(`https://wa.me/?text=${encodeURIComponent(`Roteiro ${routeName}${technician ? ` — técnico ${technician}` : ""}:\n${dirUrl}`)}`, "_blank")}
+          <button onClick={() => share()}
             className="rf-btn-primary w-full h-11 rounded-xl text-sm" data-testid="rf-share-route-button"><Share2 className="h-4 w-4" />Compartilhar rota</button>
           <p className="text-xs text-slate-400 text-center" data-testid="rf-live-status">{liveTech ? "Técnico em deslocamento — posição ao vivo no mapa" : "Aguardando o técnico iniciar a navegação"}</p>
         </>

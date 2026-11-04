@@ -504,6 +504,12 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - NavigationHUD: barra inferior recolhível, botão "Enviar previsão" (ETA exato da navegação → WhatsApp do cliente); celular deitado: HUD e faixa de manobra menores à esquerda.
 - PublicTrackingPage: visual RotaFlow (mapa vetorial, linha azul com contorno, painéis de vidro).
 
+### 2026-11-04 — Compartilhar rota para o consumidor
+- Admin "Compartilhar rota": backend escolhe a próxima OS não concluída do roteiro (POST /tracking/share-token sem os_number) e devolve telefone/nome; abre WhatsApp do consumidor com link /track/{token}.
+- Técnico ao concluir/reabrir parada no mapa grava `stop_status` no roteiro (/tracking/stop-status); link de OS concluída responde 410 (expirado).
+- Página /track: só mapa (sem badges, botões, pop-ups), rota ao vivo do técnico, atualização a cada 3s; destino geocodificado se a OS não tiver coordenada.
+
+
 
 
 - Maps "can't load Google Maps": `REACT_APP_GOOGLE_MAPS_API_KEY` faltava no frontend/.env (migração) → adicionada. Rota planejada agora em azul sólido (cinza tracejado sumia sob o trânsito).
