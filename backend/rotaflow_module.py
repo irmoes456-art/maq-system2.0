@@ -330,6 +330,21 @@ async def nav_leg(body: NavLegIn, user: dict = Depends(get_current_user)):
     return {"route": routes[0]}
 
 
+# Fundo da janela flutuante (PiP): imagem do mapa via Maps Static API, servida pela mesma origem.
+@router.get("/static-map")
+async def static_map(lat: float, lng: float, zoom: int = 16, user: dict = Depends(get_current_user)):
+    from fastapi.responses import Response
+    rate_limit(f"sm:{user['id']}", 30, 60)
+    params = {"center": f"{lat:.5f},{lng:.5f}", "zoom": max(12, min(zoom, 18)), "size": "640x640", "scale": 1,
+              "key": os.environ.get("GOOGLE_MAPS_API_KEY")}
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get("https://maps.googleapis.com/maps/api/staticmap", params=params)
+    if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
+        raise HTTPException(status_code=503, detail="Mapa estático indisponível (ative a Maps Static API na chave do Google).")
+    return Response(content=r.content, media_type=r.headers["content-type"], headers={"Cache-Control": "private, max-age=600"})
+
+
+
 
 # ─── OSs do sistema como paradas ───
 OS_PROJ = {"_id": 0, "os_number": 1, "customer_name": 1, "address": 1, "number": 1, "neighborhood": 1, "city": 1,

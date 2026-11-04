@@ -520,6 +520,12 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Recálculo após desvio: intervalo mínimo 4s→2s; limite nav-leg 20→40/min.
 - update_route: OS que entra no roteiro sai da lista "removidas" do mapa (route_map_state.removed), voltando a aparecer.
 
+### 2026-11-04 — Janela flutuante (PiP) da navegação
+- hooks/usePip.js: canvas 300px → captureStream → vídeo PiP. Fundo = imagem do mapa (GET /api/rf/static-map, Maps Static API, recarrega a cada ~120 m), rota restante azul com contorno e seta centralizada girando com o rumo; sem badges. Janela nativa traz "voltar ao app" e X.
+- Abre pelo botão "Janela flutuante" (nav-pip-button) no HUD e tenta abrir sozinha ao sair do app (visibilitychange + mediaSession enterpictureinpicture).
+- PENDENTE: a Maps Static API não está ativada na chave do Google (403) — até ativar, o fundo fica cinza liso.
+
+
 
 
 

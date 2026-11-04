@@ -15,6 +15,7 @@ import { MobileSheet, sheetHeight } from "@/components/layout/MobileSheet";
 import { NavigationHUD } from "@/components/nav/NavigationHUD";
 import { usePlanner } from "@/hooks/usePlanner";
 import { useNavigationSession } from "@/hooks/useNavigationSession";
+import { usePip } from "@/hooks/usePip";
 import "@/rotaflow.css";
 
 // Mapa do roteiro = RotaFlow (Mapaflow) + recursos do sistema (Ver OS, Maps/Waze, Enviar Maps, compartilhar local, rastreio do admin).
@@ -189,6 +190,7 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
   const trafficLayer = useRef(null);
   const navStarted = useRef(false);
   useAdminMirror(session, routeId, userName, planner.stops);
+  const pip = usePip(session);
   const liveTech = useLiveTech(map, routeId, isAdmin);
   // ETA (s) até cada parada pela rota calculada: soma dos trechos.
   const etaById = useMemo(() => {
@@ -371,6 +373,7 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
         className={`absolute z-20 ${session.active ? "right-3 sm:right-5 top-[38%]" : isDesktop ? "right-5 bottom-8" : "right-3 top-3"}`} />
       <AnimatePresence>
         {session.active && <NavigationHUD session={session} following={follow} onOverview={navOverview} onRecenter={recenter}
+          onPip={pip.supported ? async () => { if (!(await pip.enter())) toast.error("Não foi possível abrir a janela flutuante neste aparelho."); } : null}
           onSendEta={() => {
             const s = planner.stops.find((x) => x.id === session.targetKey);
             if (!s?.os_number) { toast.error("Esta parada não é uma OS."); return; }

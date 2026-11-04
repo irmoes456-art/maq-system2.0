@@ -2,7 +2,7 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp, ArrowUpLeft, ArrowUpRight, ChevronDown, ChevronUp, CornerUpLeft, CornerUpRight, Flag, Gauge, Loader2, Map as MapIcon, MessageCircle,
-  Merge, Pause, Play, RefreshCcw, RotateCcw, RotateCw, Ship, SkipForward, Volume2, VolumeX, WifiOff, X, Shuffle, CheckCircle2, PartyPopper,
+  Merge, Pause, Play, PictureInPicture2, RefreshCcw, RotateCcw, RotateCw, Ship, SkipForward, Volume2, VolumeX, WifiOff, X, Shuffle, CheckCircle2, PartyPopper,
 } from "lucide-react";
 import { fmtClock, fmtDist, fmtDur } from "@/lib/geo";
 
@@ -59,7 +59,7 @@ function Banner({ session }) {
   );
 }
 
-function BottomBar({ session, following, onOverview, onRecenter, onSendEta }) {
+function BottomBar({ session, following, onOverview, onRecenter, onSendEta, onPip }) {
   const { nav, target, paused, gpsMode, simSpeed, setSimSpeed, voice, setVoice, remainingTargets } = session;
   const [collapsed, setCollapsed] = useState(false);
   const eta = nav ? fmtClock(new Date(Date.now() + nav.remainingS * 1000)) : "--:--";
@@ -90,6 +90,7 @@ function BottomBar({ session, following, onOverview, onRecenter, onSendEta }) {
           {paused ? <><Play className="h-4 w-4" />Retomar</> : <><Pause className="h-4 w-4" />Pausar</>}
         </button>
         {onSendEta && target?.key !== "base" && <button onClick={onSendEta} className="rf-pill" data-testid="nav-send-eta-button"><MessageCircle className="h-4 w-4" />Enviar previsão</button>}
+        {onPip && <button onClick={onPip} className="rf-pill" data-testid="nav-pip-button"><PictureInPicture2 className="h-4 w-4" />Janela flutuante</button>}
         {hasNext && <button onClick={() => session.proceed(false)} className="rf-pill" data-testid="next-stop-button"><SkipForward className="h-4 w-4" />Próxima parada</button>}
         <button onClick={() => setVoice(!voice)} className="rf-pill" aria-label="Voz" data-testid="voice-toggle-button">
           {voice ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
@@ -142,7 +143,7 @@ function ArrivalModal({ session }) {
   );
 }
 
-export function NavigationHUD({ session, following, onOverview, onRecenter, onSendEta }) {
+export function NavigationHUD({ session, following, onOverview, onRecenter, onSendEta, onPip }) {
   return (
     <div className="absolute inset-0 z-30 pointer-events-none flex flex-col justify-between p-3 sm:p-5" data-testid="navigation-hud">
       <div className="w-full sm:max-w-md rf-hud-top">
@@ -152,7 +153,7 @@ export function NavigationHUD({ session, following, onOverview, onRecenter, onSe
         )}
       </div>
       <div className="w-full sm:max-w-md rf-hud-bottom">
-        <BottomBar session={session} following={following} onOverview={onOverview} onRecenter={onRecenter} onSendEta={onSendEta} />
+        <BottomBar session={session} following={following} onOverview={onOverview} onRecenter={onRecenter} onSendEta={onSendEta} onPip={onPip} />
       </div>
       <AnimatePresence><ArrivalModal session={session} /></AnimatePresence>
     </div>
