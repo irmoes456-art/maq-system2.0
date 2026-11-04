@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, sysApi } from "@/lib/api";
 import { fmtDist, fmtDur, haversine } from "@/lib/geo";
 
 // Planner do RotaFlow ligado a um roteiro do sistema: paradas = OSs do roteiro (+ avulsas).
-// A ordem das OSs é salva no roteiro (onPersistOrders); avulsas/status/retorno ficam no aparelho.
+// Ordem/avulsas/removidas/status/retorno ficam salvos no servidor por roteiro (/tracking/map-state) + cópia no aparelho.
 const newId = () => (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 const addrOf = (o) => [[o.address, o.number].filter(Boolean).join(" "), o.neighborhood, o.city].filter(Boolean).join(", ");
 const ROUTE_FIELDS = ["os_number", "customer_name", "neighborhood", "city", "address", "number", "phone1", "technician",
@@ -15,7 +15,7 @@ export const osToStop = (o, extra = {}) => ({
   address: addrOf(o), place_id: null, lat: o.lat, lng: o.lng, status: "pendente", precision: o.precision, order: o, ...extra,
 });
 
-export function usePlanner(base, { routeId, routeName, orders, onPersistOrders }) {
+export function usePlanner(base, { routeId, routeName, orders, onPersistOrders, readOnly }) {
   const key = `rf-route-${routeId}`;
   const local = useRef(JSON.parse(localStorage.getItem(key) || "{}"));
   const [stops, setStops] = useState([]);
@@ -28,12 +28,20 @@ export function usePlanner(base, { routeId, routeName, orders, onPersistOrders }
   const [legCompare, setLegCompare] = useState(null);
   const [preparing, setPreparing] = useState(true);
   const osKey = useRef("");
+  const routeIds = useRef([]);
 
   const saveLocal = useCallback((list, rtb) => {
-    const data = { rtb, order: list.map((s) => s.id), extras: list.filter((s) => !s.os_number), status: Object.fromEntries(list.map((s) => [s.id, s.status])) };
+    const ids = new Set(list.map((s) => s.id));
+    const data = {
+      rtb, order: list.map((s) => s.id),
+      extras: list.filter((s) => !routeIds.current.includes(s.id)),
+      removed: routeIds.current.filter((id) => !ids.has(id)),
+      status: Object.fromEntries(list.map((s) => [s.id, s.status])),
+    };
     local.current = data;
     localStorage.setItem(key, JSON.stringify(data));
-  }, [key]);
+    if (!readOnly) sysApi.put(`/tracking/map-state/${routeId}`, data).catch(() => toast.error("Não foi possível salvar as alterações do mapa."));
+  }, [key, readOnly, routeId]);
 
   const persist = useCallback(async (list, rtb) => {
     saveLocal(list, rtb);
@@ -87,20 +95,27 @@ export function usePlanner(base, { routeId, routeName, orders, onPersistOrders }
     let alive = true;
     (async () => {
       const nums = orders.map((o) => String(o.os_number));
-      let info = [];
-      try { info = (await api.post("/os-stops", { os_numbers: nums })).data; } catch (e) { toast.error(apiError(e)); }
+      routeIds.current = nums.map((n) => `os-${n}`);
+      const [infoR, stateR] = await Promise.allSettled([
+        api.post("/os-stops", { os_numbers: nums }),
+        sysApi.get(`/tracking/map-state/${routeId}`),
+      ]);
       if (!alive) return;
+      if (infoR.status === "rejected") toast.error(apiError(infoR.reason));
+      const info = infoR.status === "fulfilled" ? infoR.value.data : [];
+      const server = stateR.status === "fulfilled" ? stateR.value.data : null;
+      if (server?.order) { local.current = server; localStorage.setItem(key, JSON.stringify(server)); }
+      if (local.current.rtb != null) setReturnToBase(local.current.rtb);
       const byNum = Object.fromEntries(info.map((i) => [i.os_number, i]));
       const st = local.current.status || {};
-      const all = [...orders.map((o) => osToStop({ ...o, ...(byNum[String(o.os_number)] || {}) }, { order: o })), ...(local.current.extras || [])]
-        .map((s) => ({ ...s, status: st[s.id] || s.status }));
+      const removed = new Set(local.current.removed || []);
+      const fromRoute = orders.map((o) => osToStop({ ...o, ...(byNum[String(o.os_number)] || {}) }, { order: o, status: o.stop_status === "completed" ? "concluida" : "pendente" }))
+        .filter((s) => !removed.has(s.id));
+      const extras = (local.current.extras || []).filter((e) => !fromRoute.some((s) => s.id === e.id));
+      const all = [...fromRoute, ...extras].map((s) => ({ ...s, status: st[s.id] || s.status }));
       const idx = (local.current.order || []);
-      all.sort((a, b) => {
-        const ia = a.os_number ? nums.indexOf(a.os_number) : 999;
-        const ib = b.os_number ? nums.indexOf(b.os_number) : 999;
-        const la = idx.indexOf(a.id), lb = idx.indexOf(b.id);
-        return la >= 0 && lb >= 0 ? la - lb : ia - ib;
-      });
+      const pos = (s) => { const i = idx.indexOf(s.id); return i >= 0 ? i : 1000 + (s.os_number ? nums.indexOf(s.os_number) : 999); };
+      all.sort((a, b) => pos(a) - pos(b));
       osKey.current = all.filter((s) => s.os_number).map((s) => s.os_number).join(",");
       setStops(all);
       setPreparing(false);
@@ -119,14 +134,19 @@ export function usePlanner(base, { routeId, routeName, orders, onPersistOrders }
     if (dup) { toast.error(`"${dup.label}" já está no roteiro`); return false; }
     if (place.lat == null) { toast.error("Sem localização para este endereço — corrija na OS."); return false; }
     const stop = place.os_number ? osToStop(place) : { id: newId(), label: place.label || place.address, address: place.address || "", place_id: place.place_id || null, lat: place.lat, lng: place.lng, status: "pendente" };
-    setStops((prev) => [...prev, stop]);
+    const next = [...stops, stop];
+    setStops(next);
+    saveLocal(next, returnToBase);
     markChanged();
     return true;
-  }, [stops, markChanged]);
+  }, [stops, markChanged, saveLocal, returnToBase]);
 
-  const removeStop = useCallback((id) => { setStops((prev) => prev.filter((s) => s.id !== id)); markChanged(); }, [markChanged]);
-  const reorder = useCallback((list) => { setStops(list); markChanged(); }, [markChanged]);
-  const toggleReturn = useCallback((v) => { setReturnToBase(v); markChanged(); }, [markChanged]);
+  const removeStop = useCallback((id) => {
+    const next = stops.filter((s) => s.id !== id);
+    setStops(next); saveLocal(next, returnToBase); markChanged();
+  }, [stops, markChanged, saveLocal, returnToBase]);
+  const reorder = useCallback((list) => { setStops(list); saveLocal(list, returnToBase); markChanged(); }, [markChanged, saveLocal, returnToBase]);
+  const toggleReturn = useCallback((v) => { setReturnToBase(v); saveLocal(stops, v); markChanged(); }, [markChanged, saveLocal, stops]);
 
   const setStopStatus = useCallback((id, done) => {
     setStops((prev) => {

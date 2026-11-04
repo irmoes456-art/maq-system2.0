@@ -342,6 +342,32 @@ async def update_stop_statuses(body: StopStatusesUpdate, payload: dict = Depends
 
 
 # ─── Public shareable link (Uber-like) ──────────────────────────
+# Estado do mapa por roteiro (ordem, avulsas, removidas, concluídas, retorno) — vale em qualquer aparelho.
+class MapState(BaseModel):
+    rtb: bool = True
+    order: list = []
+    extras: list = []
+    removed: list = []
+    status: dict = {}
+
+
+@router.get("/map-state/{route_id}")
+async def get_map_state(route_id: str, _: dict = Depends(verify_token)):
+    from server import mongo_db
+    doc = await mongo_db["route_map_state"].find_one({"route_id": route_id}, {"_id": 0, "route_id": 0})
+    return doc or {}
+
+
+@router.put("/map-state/{route_id}")
+async def put_map_state(route_id: str, body: MapState, _: dict = Depends(verify_token)):
+    from server import mongo_db
+    await mongo_db["route_map_state"].update_one(
+        {"route_id": route_id},
+        {"$set": {**body.model_dump(), "route_id": route_id, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
 @router.post("/share-token")
 async def create_share_token(body: ShareTokenRequest, _: dict = Depends(verify_token)):
     """Issue a short-lived signed token that grants public read-only access
@@ -431,6 +457,8 @@ async def public_tracking(token: str):
         "os": safe_order,
         "technician_name": route.get("technician") or "",
         "route_name": route.get("name") or "",
+        "route_id": route_id,
+        "map": {"maps_api_key": os.environ.get("GOOGLE_MAPS_API_KEY"), "map_id": os.environ.get("GOOGLE_MAPS_MAP_ID") or "DEMO_MAP_ID"},
         "live": None,
     }
     if live and live.get("active") is not False:

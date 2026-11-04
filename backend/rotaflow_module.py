@@ -325,7 +325,7 @@ async def compute_route(body: ComputeRouteIn, user: dict = Depends(get_current_u
 
 @router.post("/routes/nav-leg")
 async def nav_leg(body: NavLegIn, user: dict = Depends(get_current_user)):
-    rate_limit(f"nav:{user['id']}", 8, 60)
+    rate_limit(f"nav:{user['id']}", 20, 60)
     routes = await _compute(body.origin, body.destination, [], heading=body.heading)
     return {"route": routes[0]}
 

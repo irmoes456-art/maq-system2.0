@@ -509,6 +509,13 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - Técnico ao concluir/reabrir parada no mapa grava `stop_status` no roteiro (/tracking/stop-status); link de OS concluída responde 410 (expirado).
 - Página /track: só mapa (sem badges, botões, pop-ups), rota ao vivo do técnico, atualização a cada 3s; destino geocodificado se a OS não tiver coordenada.
 
+### 2026-11-04 — Link do consumidor = RotaFlow, mapa salvo no servidor, senha visível
+- /track usa os mesmos componentes do mapa do técnico (MapCanvas, pino RotaFlow, seta do técnico, linha azul com contorno), sem nenhum badge/botão; só desenha a rota real do técnico (nav_path), sem linha reta; ao vivo via broadcast Supabase + polling 3s.
+- Estado do mapa por roteiro salvo no servidor (GET/PUT /api/tracking/map-state/{route_id}, coleção Mongo route_map_state): ordem, paradas avulsas/OS adicionadas, removidas, concluídas, retorno à base. Salvo a cada mudança (reordenar, adicionar, remover, concluir, retorno). Admin só lê.
+- nav-leg: limite 8→20/min (evitava recálculos em sequência). Tempo medido do servidor: ~0,1–0,2s.
+- Usuários: botão olho no campo Senha (user-form-password-toggle).
+
+
 
 
 

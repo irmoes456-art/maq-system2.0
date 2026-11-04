@@ -168,7 +168,7 @@ function Workspace({ config, routeId, routeName, orders, onPersistOrders, onView
   const base = config.base;
   const isDesktop = useMedia("(min-width: 1024px)");
   const [map, setMap] = useState(null);
-  const planner0 = usePlanner(base, { routeId, routeName, orders, onPersistOrders: isAdmin ? null : onPersistOrders });
+  const planner0 = usePlanner(base, { routeId, routeName, orders, onPersistOrders: isAdmin ? null : onPersistOrders, readOnly: isAdmin });
   const { setStopStatus: setStatus0, stops: stops0 } = planner0;
   const setStopStatusSynced = useCallback((id, done) => {
     setStatus0(id, done);

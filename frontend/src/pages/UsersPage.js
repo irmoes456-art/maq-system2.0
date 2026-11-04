@@ -9,7 +9,7 @@ import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Switch } from '../components/ui/switch';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, Loader2, Users as UsersIcon, ShieldCheck } from 'lucide-react';
+import { Plus, Pencil, Trash2, Loader2, Users as UsersIcon, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL || ''}/api`;
 
@@ -23,6 +23,7 @@ export default function UsersPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [showPwd, setShowPwd] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -159,7 +160,13 @@ export default function UsersPage() {
             </div>
             <div>
               <Label>{editing ? 'Senha (deixe vazio para manter)' : 'Senha'}</Label>
-              <Input type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} data-testid="user-form-password" />
+              <div className="relative">
+                <Input type={showPwd ? 'text' : 'password'} value={form.password} onChange={e => setForm({...form, password: e.target.value})} className="pr-10" data-testid="user-form-password" />
+                <button type="button" onClick={() => setShowPwd(v => !v)} aria-label={showPwd ? 'Ocultar senha' : 'Mostrar senha'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-800" data-testid="user-form-password-toggle">
+                  {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
             <div>
               <Label>Telefone</Label>
