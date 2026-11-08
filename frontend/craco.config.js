@@ -55,6 +55,10 @@ let webpackConfig = {
       if (config.enableHealthCheck && healthPluginInstance) {
         webpackConfig.plugins.push(healthPluginInstance);
       }
+      // Sem source maps públicos no build de produção
+      if (process.env.NODE_ENV === "production") {
+        webpackConfig.devtool = false;
+      }
       return webpackConfig;
     },
   },

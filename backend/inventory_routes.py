@@ -35,14 +35,17 @@ def init(database, jwt_secret, mongo=None):
     _jwt_secret = jwt_secret
     mongo_db = mongo
 
-def _auth(credentials: HTTPAuthorizationCredentials = Depends(_security)):
+async def _auth(credentials: HTTPAuthorizationCredentials = Depends(_security)):
     try:
         payload = jwt.decode(credentials.credentials, _jwt_secret, algorithms=[_jwt_algorithm])
-        return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    if payload.get("iss") == "mastermaq-tracking":
+        raise HTTPException(status_code=401, detail="Invalid token")
+    import security
+    return await security.check_session(payload)
 
 # ==================== MODELS ====================
 

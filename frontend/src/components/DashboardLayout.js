@@ -38,6 +38,7 @@ import NotificationsPanel from './NotificationsPanel';
 import OrderDetailOverlay from './OrderDetailOverlay';
 import { setupInstallPrompt, promptInstall } from '../serviceWorkerRegistration';
 import axios from 'axios';
+import { PAGE_PATHS } from '../lib/pages';
 
 const LOGO_URL = 'https://customer-assets.emergentagent.com/job_os-management-hub-1/artifacts/usi8ly9o_image.png';
 
@@ -355,10 +356,7 @@ const DashboardLayout = ({ children, unreadCount = 0 }) => {
           <ScrollArea className="flex-1 py-4">
             <nav className="px-3 space-y-1">
               {menuItems
-                .filter(item => isAdmin || !item.adminOnly)
-                // Invisacook role only sees Ordens de Serviço — everything
-                // else is hidden even if it's not adminOnly.
-                .filter(item => !isInvisacook || item.path === '/service-orders')
+                .filter(item => (user?.pages || []).some(p => PAGE_PATHS[p] === item.path))
                 .map((item) => {
                 const Icon = item.icon;
                 const isActive = location.pathname === item.path;

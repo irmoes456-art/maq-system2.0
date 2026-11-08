@@ -13,7 +13,37 @@ import { Plus, Pencil, Trash2, Loader2, Users as UsersIcon, ShieldCheck, Eye, Ey
 
 const API = `${process.env.REACT_APP_BACKEND_URL || ''}/api`;
 
-const emptyForm = { name: '', email: '', password: '', phone: '', role: 'technician', active: true };
+const PAGES = [
+  ['service-orders', 'Ordens de Serviço'], ['routes', 'Roteiros'], ['inventory', 'Estoque'], ['financial', 'Financeiro'],
+  ['manuais', 'Manuais'], ['mi', 'Mi'], ['whatsapp', 'WhatsApp API'], ['users', 'Usuários'], ['webhooks', 'Webhooks'], ['labels', 'Adesivos'],
+];
+const ROLE_PAGES = {
+  admin: PAGES.map(([k]) => k), technician: ['routes', 'manuais'], invisacook: ['service-orders'],
+};
+
+const emptyForm = { name: '', email: '', password: '', phone: '', role: 'technician', active: true, pages: ROLE_PAGES.technician };
+
+function PagesPicker({ form, setForm }) {
+  const locked = form.role === 'invisacook';
+  const toggle = (k) => setForm(f => ({ ...f, pages: f.pages.includes(k) ? f.pages.filter(p => p !== k) : [...f.pages, k] }));
+  return (
+    <div data-testid="user-form-pages">
+      <Label>Páginas com acesso</Label>
+      <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+        {PAGES.map(([k, label]) => {
+          const disabled = locked || (k === 'users' && form.role !== 'admin');
+          return (
+            <label key={k} className={`flex items-center gap-2 text-sm rounded-md border px-2 py-1.5 ${disabled ? 'opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}>
+              <input type="checkbox" checked={form.pages.includes(k)} disabled={disabled} onChange={() => toggle(k)} data-testid={`user-page-${k}`} />
+              {label}
+            </label>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-gray-500 mt-1">{locked ? 'Invisacook acessa somente as próprias OSs.' : 'Usuários só pode ser liberado para Admin. O bloqueio vale também no servidor.'}</p>
+    </div>
+  );
+}
 
 export default function UsersPage() {
   const { getAuthHeader } = useAuth();
@@ -42,7 +72,7 @@ export default function UsersPage() {
   const openCreate = () => { setEditing(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (u) => {
     setEditing(u);
-    setForm({ name: u.name || '', email: u.email || '', password: '', phone: u.phone || '', role: u.role || 'technician', active: !!u.active });
+    setForm({ name: u.name || '', email: u.email || '', password: '', phone: u.phone || '', role: u.role || 'technician', active: !!u.active, pages: u.pages || ROLE_PAGES[u.role] || [] });
     setOpen(true);
   };
 
@@ -145,7 +175,7 @@ export default function UsersPage() {
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? 'Editar Usuário' : 'Novo Usuário'}</DialogTitle>
           </DialogHeader>
@@ -177,7 +207,7 @@ export default function UsersPage() {
               <select
                 className="w-full h-10 px-3 border rounded-md text-sm"
                 value={form.role}
-                onChange={e => setForm({...form, role: e.target.value})}
+                onChange={e => setForm({...form, role: e.target.value, pages: ROLE_PAGES[e.target.value]})}
                 data-testid="user-form-role"
               >
                 <option value="technician">Técnico</option>
@@ -189,6 +219,7 @@ export default function UsersPage() {
               <Switch checked={form.active} onCheckedChange={v => setForm({...form, active: v})} data-testid="user-form-active" />
               <Label>Usuário ativo</Label>
             </div>
+            <PagesPicker form={form} setForm={setForm} />
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
               <Button type="submit" disabled={saving} data-testid="user-form-save">

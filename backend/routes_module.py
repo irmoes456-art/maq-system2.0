@@ -34,7 +34,10 @@ async def verify_token(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Token expired")
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return payload
+    if payload.get("iss") == "mastermaq-tracking":
+        raise HTTPException(status_code=401, detail="Invalid token")
+    import security
+    return await security.check_session(payload)
 
 
 router = APIRouter(prefix="/routes", tags=["routes"], dependencies=[Depends(verify_token)])

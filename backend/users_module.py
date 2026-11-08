@@ -12,10 +12,25 @@ import uuid
 import bcrypt
 from datetime import datetime, timezone
 from typing import Optional, List
-from fastapi import HTTPException, Depends
+from fastapi import HTTPException, Depends, Request
 from pydantic import BaseModel, EmailStr, Field
 
 VALID_ROLES = {"admin", "technician", "invisacook"}
+
+
+def _clean_pages(pages):
+    import security
+    if pages is None:
+        return None
+    bad = [p for p in pages if p not in security.ALL_PAGES]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Página inválida: {bad[0]}")
+    return list(dict.fromkeys(pages))
+
+
+def _check_password(pw: str):
+    if len(pw or "") < 8:
+        raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 8 caracteres")
 
 
 # ─── Pydantic models ────────────────────────────────────────────────
@@ -26,6 +41,7 @@ class UserCreate(BaseModel):
     role: str = "technician"
     phone: Optional[str] = None
     active: bool = True
+    pages: Optional[List[str]] = None
 
 
 class UserUpdate(BaseModel):
@@ -35,6 +51,8 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     phone: Optional[str] = None
     active: Optional[bool] = None
+    pages: Optional[List[str]] = None
+    reset_pages: bool = False
 
 
 class UserPublic(BaseModel):
@@ -61,6 +79,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 # ─── DB helpers (Mongo) ─────────────────────────────────────────────
 def _public(doc: dict) -> dict:
+    import security
     return {
         "id": doc.get("id"),
         "name": doc.get("name", ""),
@@ -69,6 +88,8 @@ def _public(doc: dict) -> dict:
         "phone": doc.get("phone") or None,
         "active": doc.get("active", True),
         "created_at": doc.get("created_at"),
+        "pages": security.pages_of(doc, doc.get("role", "technician"), doc.get("email", "")),
+        "custom_pages": doc.get("pages") is not None,
     }
 
 
@@ -126,8 +147,10 @@ def setup_users_routes(api_router, mongo_db, verify_token):
         return [_public(r) for r in rows]
 
     @api_router.post("/users")
-    async def create_user(body: UserCreate, _: dict = Depends(_require_admin)):
+    async def create_user(body: UserCreate, request: Request, admin: dict = Depends(_require_admin)):
+        import security
         email = body.email.strip().lower()
+        _check_password(body.password)
         if body.role not in VALID_ROLES:
             raise HTTPException(status_code=400, detail="Role inválido")
         existing = await mongo_db["users"].find_one({"email": email})
@@ -141,13 +164,16 @@ def setup_users_routes(api_router, mongo_db, verify_token):
             "role": body.role,
             "phone": body.phone,
             "active": body.active,
+            "pages": _clean_pages(body.pages),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await mongo_db["users"].insert_one(doc)
+        await security.event("user_created", request, by=admin.get("email"), target=email, role=body.role)
         return _public(doc)
 
     @api_router.put("/users/{user_id}")
-    async def update_user(user_id: str, body: UserUpdate, _: dict = Depends(_require_admin)):
+    async def update_user(user_id: str, body: UserUpdate, request: Request, admin: dict = Depends(_require_admin)):
+        import security
         existing = await mongo_db["users"].find_one({"id": user_id})
         if not existing:
             raise HTTPException(status_code=404, detail="Usuário não encontrado")
@@ -162,7 +188,9 @@ def setup_users_routes(api_router, mongo_db, verify_token):
                     raise HTTPException(status_code=400, detail="Email já em uso")
             updates["email"] = email
         if body.password:
+            _check_password(body.password)
             updates["password_hash"] = hash_password(body.password)
+            updates["tokens_valid_after"] = int(datetime.now(timezone.utc).timestamp())
         if body.role is not None:
             if body.role not in VALID_ROLES:
                 raise HTTPException(status_code=400, detail="Role inválido")
@@ -176,19 +204,32 @@ def setup_users_routes(api_router, mongo_db, verify_token):
             if existing.get("email") == (os.environ.get("APP_LOGIN_EMAIL") or "").strip().lower() and not body.active:
                 raise HTTPException(status_code=400, detail="Não é permitido desativar o admin principal")
             updates["active"] = body.active
+            if not body.active:
+                updates["tokens_valid_after"] = int(datetime.now(timezone.utc).timestamp())
+        if body.reset_pages:
+            updates["pages"] = None
+        elif body.pages is not None:
+            updates["pages"] = _clean_pages(body.pages)
         if updates:
             await mongo_db["users"].update_one({"id": user_id}, {"$set": updates})
+            security.forget_user(existing.get("email"))
+            security.forget_user(updates.get("email"))
+            await security.event("user_updated", request, by=admin.get("email"), target=existing.get("email"),
+                                 fields=sorted(k for k in updates if k != "password_hash"))
         updated = await mongo_db["users"].find_one({"id": user_id})
         return _public(updated)
 
     @api_router.delete("/users/{user_id}")
-    async def delete_user(user_id: str, _: dict = Depends(_require_admin)):
+    async def delete_user(user_id: str, request: Request, admin: dict = Depends(_require_admin)):
+        import security
         existing = await mongo_db["users"].find_one({"id": user_id})
         if not existing:
             raise HTTPException(status_code=404, detail="Usuário não encontrado")
         if existing.get("email") == (os.environ.get("APP_LOGIN_EMAIL") or "").strip().lower():
             raise HTTPException(status_code=400, detail="Não é permitido excluir o admin principal")
         await mongo_db["users"].delete_one({"id": user_id})
+        security.forget_user(existing.get("email"))
+        await security.event("user_deleted", request, by=admin.get("email"), target=existing.get("email"))
         return {"ok": True}
 
     # Public-ish for techs: list active technicians (admin only — used in admin UI assigning OS)

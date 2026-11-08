@@ -20,7 +20,11 @@ import PublicSignPage from './pages/PublicSignPage';
 import MiPage from './pages/MiPage';
 import './App.css';
 
-const ProtectedRoute = ({ children, adminOnly = false, allowedRoles = null }) => {
+import { PAGE_PATHS } from './lib/pages';
+const firstPage = (user) => PAGE_PATHS[(user?.pages || [])[0]] || '/login';
+
+// O acesso real é validado no servidor; aqui só evita abrir telas sem permissão.
+const ProtectedRoute = ({ children, page }) => {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -35,19 +39,9 @@ const ProtectedRoute = ({ children, adminOnly = false, allowedRoles = null }) =>
     return <Navigate to="/login" replace />;
   }
 
-  // Invisacook role has its own landing page (/service-orders) — never
-  // exposed to any other authenticated route. This is enforced regardless of
-  // adminOnly / allowedRoles so a URL-typed path can't leak features.
-  if (user.role === 'invisacook') {
-    if (allowedRoles && allowedRoles.includes('invisacook')) {
-      return children;
-    }
-    return <Navigate to="/service-orders" replace />;
-  }
-
-  // Technicians may only access /routes and /manuais
-  if (adminOnly && user.role !== 'admin') {
-    return <Navigate to="/routes" replace />;
+  if (page && !(user.pages || []).includes(page)) {
+    const dest = firstPage(user);
+    return dest === '/login' ? <div className="min-h-screen grid place-items-center text-gray-500" data-testid="no-pages">Sem páginas liberadas. Fale com o administrador.</div> : <Navigate to={dest} replace />;
   }
 
   return children;
@@ -74,7 +68,7 @@ const PublicRoute = ({ children }) => {
     if (redirect && redirect.startsWith('/')) {
       return <Navigate to={redirect} replace />;
     }
-    const dest = user.role === 'technician' ? '/routes' : '/service-orders';
+    const dest = firstPage(user);
     return <Navigate to={dest} replace />;
   }
 
@@ -83,7 +77,7 @@ const PublicRoute = ({ children }) => {
 
 function AppRoutes() {
   const { user } = useAuth();
-  const defaultDest = user?.role === 'technician' ? '/routes' : '/service-orders';
+  const defaultDest = user ? firstPage(user) : '/login';
   return (
     <Routes>
       <Route 
@@ -110,7 +104,7 @@ function AppRoutes() {
       <Route 
         path="/service-orders" 
         element={
-          <ProtectedRoute adminOnly allowedRoles={['admin', 'invisacook']}>
+          <ProtectedRoute page="service-orders">
             <ServiceOrdersPage />
           </ProtectedRoute>
         } 
@@ -118,7 +112,7 @@ function AppRoutes() {
       <Route 
         path="/inventory" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="inventory">
             <InventoryPage />
           </ProtectedRoute>
         } 
@@ -126,7 +120,7 @@ function AppRoutes() {
       <Route 
         path="/financial" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="financial">
             <FinancialPage />
           </ProtectedRoute>
         } 
@@ -134,7 +128,7 @@ function AppRoutes() {
       <Route 
         path="/routes" 
         element={
-          <ProtectedRoute>
+          <ProtectedRoute page="routes">
             <RoutesPage />
           </ProtectedRoute>
         } 
@@ -142,7 +136,7 @@ function AppRoutes() {
       <Route 
         path="/manuais" 
         element={
-          <ProtectedRoute>
+          <ProtectedRoute page="manuais">
             <ManuaisPage />
           </ProtectedRoute>
         } 
@@ -150,7 +144,7 @@ function AppRoutes() {
       <Route 
         path="/whatsapp" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="whatsapp">
             <WhatsAppConfigPage />
           </ProtectedRoute>
         } 
@@ -158,7 +152,7 @@ function AppRoutes() {
       <Route 
         path="/users" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="users">
             <UsersPage />
           </ProtectedRoute>
         } 
@@ -166,7 +160,7 @@ function AppRoutes() {
       <Route 
         path="/admin/webhooks" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="webhooks">
             <WebhooksAdminPage />
           </ProtectedRoute>
         } 
@@ -174,7 +168,7 @@ function AppRoutes() {
       <Route 
         path="/admin/labels" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="labels">
             <LabelTemplatesPage />
           </ProtectedRoute>
         } 
@@ -182,7 +176,7 @@ function AppRoutes() {
       <Route 
         path="/mi" 
         element={
-          <ProtectedRoute adminOnly>
+          <ProtectedRoute page="mi">
             <MiPage />
           </ProtectedRoute>
         } 

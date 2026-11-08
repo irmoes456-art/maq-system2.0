@@ -97,6 +97,7 @@ export const AuthProvider = ({ children }) => {
           role: response.data.role || 'admin',
           name: response.data.name || '',
           user_id: response.data.user_id || '',
+          pages: response.data.pages || [],
         });
         setToken(storedToken);
 
@@ -133,7 +134,9 @@ export const AuthProvider = ({ children }) => {
     const { token: newToken, email: userEmail, role, name } = response.data;
     localStorage.setItem('token', newToken);
     setToken(newToken);
-    setUser({ email: userEmail, role: role || 'admin', name: name || '', user_id: response.data.user_id || '' });
+    let pages = [];
+    try { pages = (await axios.get(`${API}/auth/verify`, { headers: { Authorization: `Bearer ${newToken}` } })).data.pages || []; } catch (_) { /* sem páginas */ }
+    setUser({ email: userEmail, role: role || 'admin', name: name || '', user_id: response.data.user_id || '', pages });
     return response.data;
   };
 

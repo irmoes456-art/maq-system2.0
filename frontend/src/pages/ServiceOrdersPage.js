@@ -1946,6 +1946,8 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
   const isTechnician = _role === 'technician';
   const { getAuthHeader, isInvisacook } = useAuth();
   const [editedOrder, setEditedOrder] = useState(null);
+  const [feePaid, setFeePaid] = useState(null);
+  useEffect(() => { setFeePaid(null); }, [order?.os_number]);
   const [saving, setSaving] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
@@ -2183,6 +2185,23 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-orange-300 text-orange-600 font-medium" data-testid="modal-badge-hq">
                   Telecontrol HQ
                 </Badge>
+              )}
+              {!String(order.source || '').startsWith('telecontrol') && (
+                <select
+                  value={(feePaid ?? !!order.visit_fee_paid) ? 'paid' : 'unpaid'}
+                  onChange={async (e) => {
+                    const paid = e.target.value === 'paid';
+                    try {
+                      await axios.put(`${API}/service-orders/${encodeURIComponent(order.os_number)}`, { visit_fee_paid: paid }, getAuthHeader());
+                      setFeePaid(paid);
+                    } catch { toast.error('Erro ao salvar taxa'); }
+                  }}
+                  className={`text-xs rounded-md px-1.5 py-0.5 border font-medium cursor-pointer ${(feePaid ?? order.visit_fee_paid) ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300'}`}
+                  data-testid="modal-taxa-select"
+                >
+                  <option value="paid">Taxa Paga</option>
+                  <option value="unpaid">Taxa não paga</option>
+                </select>
               )}
             </div>
             <BrandLogo brand={order.brand} size="md" />

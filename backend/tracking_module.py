@@ -46,7 +46,8 @@ async def verify_token(authorization: Optional[str] = Header(None)):
     # Reject share-tokens (different issuer): only auth tokens may call protected routes.
     if payload.get("iss") == "mastermaq-tracking":
         raise HTTPException(status_code=401, detail="Invalid token")
-    return payload
+    import security
+    return await security.check_session(payload)
 
 
 # ─── Models ─────────────────────────────────────────────────────
@@ -151,7 +152,7 @@ async def update_stop_status(update: StopStatusUpdate, _: dict = Depends(verify_
 
 
 @router.get("/config")
-async def get_tracking_config():
+async def get_tracking_config(_: dict = Depends(verify_token)):
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
         "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),

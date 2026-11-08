@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Header
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -129,12 +130,24 @@ except Exception as e:
     logger.error(f"Error loading Telecontrol scraper: {e}")
 
 # Create the main app
-app = FastAPI()
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+import security  # noqa: E402
+security.init(mongo_db)
+app.add_middleware(security.PageGuardMiddleware, secret=JWT_SECRET, algorithm=JWT_ALGORITHM)
+app.add_middleware(security.SecurityHeadersMiddleware)
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s", request.url.path)
+    return JSONResponse({"detail": "Erro interno do servidor"}, status_code=500)
+
 
 # CORS must be FIRST middleware (before any route processing)
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
@@ -538,7 +551,8 @@ async def env_check(secret: str = ""):
     Protected by a shared secret matching JWT_SECRET to avoid leaking env
     presence info publicly. Pass `?secret=<JWT_SECRET>`.
     """
-    if not secret or secret != os.environ.get('JWT_SECRET', ''):
+    import hmac
+    if not secret or not hmac.compare_digest(secret, os.environ.get('JWT_SECRET', '')):
         raise HTTPException(status_code=401, detail="missing or wrong ?secret=")
     
     required = [
@@ -610,7 +624,7 @@ async def env_check(secret: str = ""):
     }
 
 
-security = HTTPBearer()
+http_bearer = HTTPBearer()
 
 # OS Status colors mapping
 OS_STATUS_COLORS = {
@@ -822,7 +836,7 @@ class CEPResponse(BaseModel):
     uf: str
 
 # Auth helpers
-TOKEN_EXPIRY_SECONDS = 30 * 24 * 3600  # 30 days
+TOKEN_EXPIRY_SECONDS = 7 * 24 * 3600  # 7 dias (renovado automaticamente ao abrir o app)
 
 def create_token(email: str, role: str = "admin", name: str = "", user_id: str = "") -> str:
     payload = {
@@ -830,27 +844,39 @@ def create_token(email: str, role: str = "admin", name: str = "", user_id: str =
         "role": role,
         "name": name,
         "user_id": user_id,
+        "iat": int(datetime.now(timezone.utc).timestamp()),
         "exp": datetime.now(timezone.utc).timestamp() + TOKEN_EXPIRY_SECONDS
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        # Backwards-compat default for tokens issued before RBAC
-        payload.setdefault("role", "admin")
-        payload.setdefault("name", "")
-        return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    if payload.get("iss") == "mastermaq-tracking":
+        raise HTTPException(status_code=401, detail="Invalid token")
+    payload.setdefault("role", "technician")
+    payload.setdefault("name", "")
+    return await security.check_session(payload)
 
 
-def require_admin(payload: dict = Depends(verify_token)):
-    if payload.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
-    return payload
+async def require_admin(request: Request, payload: dict = Depends(verify_token)):
+    return await security.admin_or_granted(request, payload)
+
+
+async def _assert_tech_os(payload: dict, os_number: str):
+    """Técnico sem a página OS só acessa OSs que estão em roteiros dele (anti-IDOR)."""
+    if payload.get("role") != "technician" or "service-orders" in await security.effective_pages(payload):
+        return
+    from routes_module import _is_own
+    routes = await db.routes.find({}, {"_id": 0, "technician": 1, "orders": 1}).to_list(5000)
+    for r in routes:
+        if _is_own(r.get("technician"), payload) and any(str(o.get("os_number")) == str(os_number) for o in r.get("orders") or []):
+            return
+    raise HTTPException(status_code=403, detail="OS fora dos seus roteiros")
 
 # Routes
 @api_router.get("/")
@@ -1175,8 +1201,12 @@ async def check_new_external_os(_: dict = Depends(verify_token)):
 
 
 @api_router.post("/auth/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, http: Request):
     email = (request.email or "").strip().lower()
+    ip = security.client_ip(http)
+    if security.hit(f"loginip:{ip}", 20, 900) or security.hit(f"loginem:{email}", 8, 900):
+        await security.event("login_blocked", http, email=email)
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde 15 minutos.")
     # 1) Try DB user (bcrypt). Seeded admin lives here too.
     user = await find_user_by_email(mongo_db, email)
     if user and user.get("active", True) and verify_user_password(request.password, user.get("password_hash", "")):
@@ -1186,13 +1216,17 @@ async def login(request: LoginRequest):
             name=user.get("name", ""),
             user_id=user.get("id", ""),
         )
+        await security.event("login_ok", http, email=email)
         return LoginResponse(token=token, email=user["email"], role=user.get("role", "technician"), name=user.get("name", ""))
 
     # 2) Fallback: legacy env-based admin (in case seed hasn't run yet)
-    if email == (APP_LOGIN_EMAIL or "").strip().lower() and request.password == APP_LOGIN_PASSWORD and APP_LOGIN_PASSWORD:
+    import hmac
+    if APP_LOGIN_PASSWORD and email == (APP_LOGIN_EMAIL or "").strip().lower() and hmac.compare_digest(request.password or "", APP_LOGIN_PASSWORD):
         token = create_token(email=email, role="admin", name="Administrador")
+        await security.event("login_ok", http, email=email)
         return LoginResponse(token=token, email=email, role="admin", name="Administrador")
 
+    await security.event("login_failed", http, email=email)
     raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
 @api_router.get("/auth/verify")
@@ -1207,10 +1241,11 @@ async def verify_auth(payload: dict = Depends(verify_token)):
             "role": user.get("role", "technician"),
             "name": user.get("name", ""),
             "user_id": user.get("id", ""),
+            "pages": security.pages_of(user, user.get("role", ""), email),
         }
     # Legacy env admin fallback
     if email == (APP_LOGIN_EMAIL or "").strip().lower():
-        return {"valid": True, "email": email, "role": "admin", "name": payload.get("name") or "Administrador", "user_id": ""}
+        return {"valid": True, "email": email, "role": "admin", "name": payload.get("name") or "Administrador", "user_id": "", "pages": security.ALL_PAGES}
     raise HTTPException(status_code=401, detail="Usuário não encontrado ou inativo")
 
 @api_router.post("/auth/refresh")
@@ -2323,6 +2358,7 @@ async def get_service_order(os_number: str, include_photos: bool = False, payloa
     # RBAC: Invisacook role may only view Invisacook OSs.
     if payload.get("role") == "invisacook" and order.get("source") != "invisacook":
         raise HTTPException(status_code=403, detail="Acesso restrito a OSs Invisacook")
+    await _assert_tech_os(payload, os_number)
     # Merge priority and print_count from MongoDB
     meta = await os_metadata_col.find_one({"os_number": os_number}, {"_id": 0, "priority": 1, "print_count": 1})
     order["priority"] = meta.get("priority", False) if meta else False
@@ -2357,6 +2393,7 @@ async def update_service_order(os_number: str, updates: ServiceOrderUpdate, requ
     order = await db.service_orders.find_one({"os_number": os_number}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Ordem de Serviço não encontrada")
+    await _assert_tech_os(payload, os_number)
 
     # RBAC: Invisacook role may only edit Invisacook OSs, and may never change
     # the source of an OS.

@@ -526,6 +526,13 @@ Repo `vrf165309-alt/systemmaq` clonado em /app; `backend/.env` restaurado com as
 - PENDENTE: a Maps Static API não está ativada na chave do Google (403) — até ativar, o fundo fica cinza liso.
 
 
+### 2026-11-07 — Segurança (auditoria completa), páginas por usuário, Taxa no modal
+- Relatório completo: /app/memory/SECURITY_AUDIT.md. Teste: backend/tests/pentest.py (36/36).
+- RLS em todas as tabelas Supabase (anon lia 7.152 OSs). backend/security.py: middleware de páginas por usuário, sessão revogável (active + tokens_valid_after), brute force no login, rate limit público, cabeçalhos/CSP, security_events. Docs/openapi desligados, source maps desligados no build, handler 500 genérico, anti-IDOR de OS para técnico.
+- Usuários: campo `pages` (lista; None = padrão do perfil). Modal Editar Usuário com "Páginas com acesso". Front: ProtectedRoute(page) + menu por user.pages (lib/pages.js).
+- Modal da OS: seletor Taxa Paga/Taxa não paga (modal-taxa-select) para OSs não-Telecontrol.
+
+
 
 
 
